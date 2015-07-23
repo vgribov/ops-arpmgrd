@@ -20,17 +20,12 @@
 #ifndef ARPMGRD_H_
 #define ARPMGRD_H_
 
+#include "openhalon-idl.h"
+
+#define ARPMGR_POLL_INTERVAL 5
 #define LOOPBACK_INTERFACE_NAME "lo"
-#define arpmgr_POLL_INTERVAL 5
-#define IPV4_ADDRESS_FAMILY_STRING "ipv4"
-#define IPV6_ADDRESS_FAMILY_STRING "ipv6"
-
-#define RECV_BUFFER_SIZE 2000
-#define ISMULTICAST(address) ((address >> 28) == 14)
-
-struct nl_req {
-    struct nlmsghdr n;
-    struct ndmsg r;
-};
+#define RECV_BUFFER_SIZE 4096
+#define IS_IPV4MULTICAST(address) ((address >> 28) == 14)
+#define MAC_ADDRSTRLEN 18
 
 #endif /* ARPMGRD_H_ */

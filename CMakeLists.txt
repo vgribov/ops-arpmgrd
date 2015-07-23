@@ -18,6 +18,8 @@ cmake_minimum_required (VERSION 2.8)
 set (ARPMGRD arpmgrd)
 project (${ARPMGRD})
 
+# Define compile flags
+set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=gnu99 -Wall -Werror")
 
 # Rules to locate needed libraries
 include(FindPkgConfig)
