@@ -47,31 +47,25 @@ class arpManagerRestartabiltyTests( HalonTest ):
     # Configure interface 1 on switch s1
     s1.cmdCLI("interface 1")
     s1.cmdCLI("ip address 192.168.1.1/24")
-    s1.cmdCLI("ipv6 address 2000::1/120")
     s1.cmdCLI("exit")
 
     # Configure interface 2 on switch s1
     s1.cmdCLI("interface 2")
     s1.cmdCLI("ip address 192.168.2.1/24")
-    s1.cmdCLI("ipv6 address 2002::1/120")
     s1.cmdCLI("exit")
 
     # Configure interface 3 on switch s1
     s1.cmdCLI("interface 3")
     s1.cmdCLI("ip address 192.168.3.1/24")
-    s1.cmdCLI("ipv6 address 2003::1/120")
     s1.cmdCLI("exit")
 
     # Configure interface 1
-    s1.cmd("/usr/bin/ovs-vsctl set interface 1 pm_info:connector=SFP_RJ45 pm_info:connector_status=supported")
     s1.cmd("/usr/bin/ovs-vsctl set interface 1 user_config:admin=up")
 
     # Configure interface 2
-    s1.cmd("/usr/bin/ovs-vsctl set interface 2 pm_info:connector=SFP_RJ45 pm_info:connector_status=supported")
     s1.cmd("/usr/bin/ovs-vsctl set interface 2 user_config:admin=up")
 
     # Configure interface 3
-    s1.cmd("/usr/bin/ovs-vsctl set interface 3 pm_info:connector=SFP_RJ45 pm_info:connector_status=supported")
     s1.cmd("/usr/bin/ovs-vsctl set interface 3 user_config:admin=up")
 
 
@@ -92,18 +86,13 @@ class arpManagerRestartabiltyTests( HalonTest ):
     # Configure host 1
     info("Configuring host 1 with 192.168.1.2/24\n")
     h1.cmd("ip addr add 192.168.1.2/24 dev h1-eth0")
-    h1.cmd("ip route add 192.168.2.0/24 via 192.168.1.1");
-    info("Configuring host 1 with 2000::2/120\n")
-    h1.cmd("ip addr add 2000::2/120 dev h1-eth0")
-    h1.cmd("ip route add 2002::0/120 via 2000::1")
+    h1.cmd("ip route add 192.168.2.0/24 via 192.168.1.1")
 
     # Configure host 2
     info("Configuring host 2 with 192.168.2.2/24\n")
     h2.cmd("ip addr add 192.168.2.2/24 dev h2-eth0")
-    h2.cmd("ip route add 192.168.1.0/24 via 192.168.2.1");
-    info("Configuring host 2 with 2002::2/120\n")
-    h2.cmd("ip addr add 2002::2/120 dev h2-eth0")
-    h2.cmd("ip route add 2000::0/120 via 2002::1")
+    h2.cmd("ip route add 192.168.1.0/24 via 192.168.2.1")
+
     # Ping from host 1 to switch
     info("Ping s1 from h1\n")
     output = h1.cmd("ping 192.168.1.1 -c2")
@@ -118,30 +107,9 @@ class arpManagerRestartabiltyTests( HalonTest ):
     assert status, "Ping Failed"
     info("Ping Success\n")
 
-    #Print from host 1 to host 2
+    # Ping from host 1 to host 2
     info("Ping h2 from h1\n")
     output = h1.cmd("ping 192.168.2.2 -c2")
-    status = parsePing(output)
-    assert status, "Ping Failed"
-    info("Ping Success\n")
-
-    # Ping from host 1 to switch
-    info("IPv6 Ping s1 from h1\n")
-    output = h1.cmd("ping6 2000::1 -c2")
-    status = parsePing(output)
-    assert status, "Ping Failed"
-    info("Ping Success\n")
-
-    # Ping from host 2 to switch
-    info("IPv6 Ping s1 from h2\n")
-    output = h2.cmd("ping6 2002::1 -c2")
-    status = parsePing(output)
-    assert status, "Ping Failed"
-    info("Ping Success\n")
-
-    # Print from host 1 to host 2
-    info("IPv6 Ping h2 from h1\n")
-    output = h1.cmd("ping6 2002::2 -c2")
     status = parsePing(output)
     assert status, "Ping Failed"
     info("Ping Success\n")
@@ -158,17 +126,11 @@ class arpManagerRestartabiltyTests( HalonTest ):
     h2 = self.net.hosts[ 1 ]
     # Show Neighbors
     info("Show neighbors\n")
-    # workaround to get latest update call show twice, needs to be fixed in CLI
     output = s1.cmdCLI("do show arp")
-    output = s1.cmdCLI("do show arp")
-    output = output + "\n" + s1.cmdCLI("do show ipv6 neighbors")
-    info(output + "\n\n")
 
     rows = output.split('\n')
     host1v4 = None
-    host1v6 = None
     host2v4 = None
-    host2v6 = None
 
     mac_index = 1
     port_index = 2
@@ -179,15 +141,9 @@ class arpManagerRestartabiltyTests( HalonTest ):
             host1v4 = row
         if '192.168.2.2' in row:
             host2v4 = row
-        if '2000::2' in row:
-            host1v6 = row
-        if '2002::2' in row:
-            host2v6 = row
 
     assert host1v4, "host 1 IPv4 not in neighbor table"
-    assert host1v6, "host 1 IPv6 not in neighbor table"
     assert host2v4, "host 2 IPv4 not in neighbor table"
-    assert host2v6, "host 2 IPv6 not in neighbor table"
 
     info("Host entries present in Neighbor table\n")
     max_index = self.column_count - 1
@@ -201,25 +157,7 @@ class arpManagerRestartabiltyTests( HalonTest ):
     state = words[state_index]
     assert state == 'reachable', "State incorrect, should be reachable"
 
-    words = host1v6.split()
-    assert words.index(max(words)) == max_index, "Unknown number of columns"
-    mac = words[mac_index]
-    assert mac == self.mac1, "Incorrect host1 MAC address"
-    port = words[port_index]
-    assert port == '1', "Incorrect port"
-    state = words[state_index]
-    assert state == 'reachable', "State incorrect, should be reachable"
-
     words = host2v4.split()
-    assert words.index(max(words)) == max_index, "Unknown number of columns"
-    mac = words[mac_index]
-    assert mac == self.mac2, "Incorrect host2 MAC address"
-    port = words[port_index]
-    assert port == '2', "Incorrect port"
-    state = words[state_index]
-    assert state == 'reachable', "State incorrect, should be reachable"
-
-    words = host2v6.split()
     assert words.index(max(words)) == max_index, "Unknown number of columns"
     mac = words[mac_index]
     assert mac == self.mac2, "Incorrect host2 MAC address"
@@ -254,9 +192,6 @@ class arpManagerRestartabiltyTests( HalonTest ):
     info("Configuring host 3 with 192.168.3.2/24\n")
     h3.cmd("ip addr add 192.168.3.2/24 dev h3-eth0")
     h3.cmd("ip route add default via 192.168.3.1");
-    info("Configuring host 2 with 2003::2/120\n")
-    h3.cmd("ip addr add 2003::2/120 dev h3-eth0")
-    h3.cmd("ip route add default via 2003::1")
 
     # Ping from host 3 to switch
     info("Ping s1 from h3\n")
@@ -264,13 +199,6 @@ class arpManagerRestartabiltyTests( HalonTest ):
     status = parsePing(output)
     #assert status, "Ping Failed\n"
     info("Ping Success\n")
-
-    # Ping from host 1 to switch
-    info("IPv6 Ping s1 from h3\n")
-    output = h3.cmd("ping6 2003::1 -c2")
-    status = parsePing(output)
-    #assert status, "Ping Failed"
-    info("Ping Successs\n")
 
     info("Also adding 50 static arp entries before restarting arpmgrd\n")
     # Add large number static arp entries
@@ -330,8 +258,6 @@ class arpManagerRestartabiltyTests( HalonTest ):
 
     info("Arpmgrd not yet started. show arp output\n")
     output = s1.cmdCLI("do show arp")
-    output = output + "\n" + s1.cmdCLI("do show ipv6 neighbors")
-    info(output + "\n\n")
 
     # Restart arpmgrd
     info("Restarting arpmgrd\n")
@@ -363,8 +289,6 @@ class arpManagerRestartabiltyTests( HalonTest ):
     # All the neighbor entries should have been deleted
     info("Arpmgrd not yet started. show arp output\n")
     output = s1.cmdCLI("do show arp")
-    output = output + "\n" + s1.cmdCLI("do show ipv6 neighbors")
-    info(output + "\n\n")
 
     # Restart arpmgrd
     info("Restarting arpmgrd\n")
@@ -374,8 +298,6 @@ class arpManagerRestartabiltyTests( HalonTest ):
     output = s1.cmdCLI("do show arp")
     rows = output.split("\n")
     rowcount = len(rows) - 5
-    output = output + "\n" + s1.cmdCLI("do show ipv6 neighbors")
-    info(output + "\n\n")
     assert rowcount == 2, "show arp is missing entries after arpmgrd restart"
 
     host2v4 = None
@@ -384,8 +306,8 @@ class arpManagerRestartabiltyTests( HalonTest ):
             host2v4 = row
     assert 'failed' in host2v4, "Host 2 failed state not updated after restart"
 
-    info("Entries deleted from db after arpmgrd resart\n")
-    info("Failed entries state updated db after arpmgrd resart\n")
+    info("Entries deleted from db after arpmgrd restart\n")
+    info("Failed entries state updated db after arpmgrd restart\n")
 
 class Test_arp_manager_restartability:
   def setup_class(cls):

@@ -47,31 +47,25 @@ class arpManagerTxnFailTests( HalonTest ):
     # Configure interface 1 on switch s1
     s1.cmdCLI("interface 1")
     s1.cmdCLI("ip address 192.168.1.1/24")
-    s1.cmdCLI("ipv6 address 2000::1/120")
     s1.cmdCLI("exit")
 
     # Configure interface 2 on switch s1
     s1.cmdCLI("interface 2")
     s1.cmdCLI("ip address 192.168.2.1/24")
-    s1.cmdCLI("ipv6 address 2002::1/120")
     s1.cmdCLI("exit")
 
     # Configure interface 3 on switch s1
     s1.cmdCLI("interface 3")
     s1.cmdCLI("ip address 192.168.3.1/24")
-    s1.cmdCLI("ipv6 address 2003::1/120")
     s1.cmdCLI("exit")
 
     # Configure interface 1
-    s1.cmd("/usr/bin/ovs-vsctl set interface 1 pm_info:connector=SFP_RJ45 pm_info:connector_status=supported")
     s1.cmd("/usr/bin/ovs-vsctl set interface 1 user_config:admin=up")
 
     # Configure interface 2
-    s1.cmd("/usr/bin/ovs-vsctl set interface 2 pm_info:connector=SFP_RJ45 pm_info:connector_status=supported")
     s1.cmd("/usr/bin/ovs-vsctl set interface 2 user_config:admin=up")
 
     # Configure interface 3
-    s1.cmd("/usr/bin/ovs-vsctl set interface 3 pm_info:connector=SFP_RJ45 pm_info:connector_status=supported")
     s1.cmd("/usr/bin/ovs-vsctl set interface 3 user_config:admin=up")
 
 
@@ -93,17 +87,11 @@ class arpManagerTxnFailTests( HalonTest ):
     info("Configuring host 1 with 192.168.1.2/24\n")
     h1.cmd("ip addr add 192.168.1.2/24 dev h1-eth0")
     h1.cmd("ip route add 192.168.2.0/24 via 192.168.1.1");
-    info("Configuring host 1 with 2000::2/120\n")
-    h1.cmd("ip addr add 2000::2/120 dev h1-eth0")
-    h1.cmd("ip route add 2002::0/120 via 2000::1")
 
     # Configure host 2
     info("Configuring host 2 with 192.168.2.2/24\n")
     h2.cmd("ip addr add 192.168.2.2/24 dev h2-eth0")
     h2.cmd("ip route add 192.168.1.0/24 via 192.168.2.1");
-    info("Configuring host 2 with 2002::2/120\n")
-    h2.cmd("ip addr add 2002::2/120 dev h2-eth0")
-    h2.cmd("ip route add 2000::0/120 via 2002::1")
     # Ping from host 1 to switch
     info("Ping s1 from h1\n")
     output = h1.cmd("ping 192.168.1.1 -c2")
@@ -118,30 +106,9 @@ class arpManagerTxnFailTests( HalonTest ):
     assert status, "Ping Failed"
     info("Ping Success\n")
 
-    #Print from host 1 to host 2
+    # Ping from host 1 to host 2
     info("Ping h2 from h1\n")
     output = h1.cmd("ping 192.168.2.2 -c2")
-    status = parsePing(output)
-    assert status, "Ping Failed"
-    info("Ping Success\n")
-
-    # Ping from host 1 to switch
-    info("IPv6 Ping s1 from h1\n")
-    output = h1.cmd("ping6 2000::1 -c2")
-    status = parsePing(output)
-    assert status, "Ping Failed"
-    info("Ping Success\n")
-
-    # Ping from host 2 to switch
-    info("IPv6 Ping s1 from h2\n")
-    output = h2.cmd("ping6 2002::1 -c2")
-    status = parsePing(output)
-    assert status, "Ping Failed"
-    info("Ping Success\n")
-
-    # Print from host 1 to host 2
-    info("IPv6 Ping h2 from h1\n")
-    output = h1.cmd("ping6 2002::2 -c2")
     status = parsePing(output)
     assert status, "Ping Failed"
     info("Ping Success\n")
@@ -160,15 +127,11 @@ class arpManagerTxnFailTests( HalonTest ):
     info("Show neighbors\n")
     # workaround to get latest update call show twice, needs to be fixed in CLI
     output = s1.cmdCLI("do show arp")
-    output = s1.cmdCLI("do show arp")
-    output = output + "\n" + s1.cmdCLI("do show ipv6 neighbors")
     info(output + "\n\n")
 
     rows = output.split('\n')
     host1v4 = None
-    host1v6 = None
     host2v4 = None
-    host2v6 = None
 
     mac_index = 1
     port_index = 2
@@ -179,15 +142,9 @@ class arpManagerTxnFailTests( HalonTest ):
             host1v4 = row
         if '192.168.2.2' in row:
             host2v4 = row
-        if '2000::2' in row:
-            host1v6 = row
-        if '2002::2' in row:
-            host2v6 = row
 
     assert host1v4, "host 1 IPv4 not in neighbor table"
-    assert host1v6, "host 1 IPv6 not in neighbor table"
     assert host2v4, "host 2 IPv4 not in neighbor table"
-    assert host2v6, "host 2 IPv6 not in neighbor table"
 
     info("Host entries present in Neighbor table\n")
     max_index = self.column_count - 1
@@ -201,25 +158,7 @@ class arpManagerTxnFailTests( HalonTest ):
     state = words[state_index]
     assert state == 'reachable', "State incorrect, should be reachable"
 
-    words = host1v6.split()
-    assert words.index(max(words)) == max_index, "Unknown number of columns"
-    mac = words[mac_index]
-    assert mac == self.mac1, "Incorrect host1 MAC address"
-    port = words[port_index]
-    assert port == '1', "Incorrect port"
-    state = words[state_index]
-    assert state == 'reachable', "State incorrect, should be reachable"
-
     words = host2v4.split()
-    assert words.index(max(words)) == max_index, "Unknown number of columns"
-    mac = words[mac_index]
-    assert mac == self.mac2, "Incorrect host2 MAC address"
-    port = words[port_index]
-    assert port == '2', "Incorrect port"
-    state = words[state_index]
-    assert state == 'reachable', "State incorrect, should be reachable"
-
-    words = host2v6.split()
     assert words.index(max(words)) == max_index, "Unknown number of columns"
     mac = words[mac_index]
     assert mac == self.mac2, "Incorrect host2 MAC address"
@@ -248,7 +187,8 @@ class arpManagerTxnFailTests( HalonTest ):
     # Kill ovsdb to simulate a crash
     info("\nKilling ovsdb server\n")
     s1.cmd("ip netns exec swns killall ovsdb-server")
-
+    # Kill l3 portd so it does not add new ip address on restart which will clear neighbors
+    s1.cmd("ip netns exec swns killall l3portd")
 
     info("Adding 5 static arp entries before restarting ovsdb-server\n")
     # Add large number static arp entries
@@ -266,13 +206,13 @@ class arpManagerTxnFailTests( HalonTest ):
     # Delete host1 192.168.1.2 entry so its state goes to failed
     s1.cmd("ip netns exec swns ip neigh del 192.168.1.2 dev 1")
 
-    time.sleep(8)
     # Restart arpmgrd
     info("Restarting ovsdb-server\n")
     s1.cmd("ip netns exec swns /usr/sbin/ovsdb-server --remote=punix:/var/run/openvswitch/db.sock --detach --no-chdir --pidfile -vSYSLOG:INFO /var/run/openvswitch/ovsdb.db /var/local/openvswitch/config.db")
 
     time.sleep(8)
-    output = s1.cmd("ip netns exec swns ovsdb-client dump | grep -A10 \'Neighbor table\'")
+
+    output = s1.cmdCLI("do show arp")
 
     rows = output.split("\n")
 
@@ -331,7 +271,6 @@ class Test_arp_manager_txn_fail:
   # Test for verifying arpmgr updates to db from kernel
   def test_arp_manager_ovsdb_failure_check_new_updates(self):
     self.test.arp_manager_ovsdb_failure_check_new_updates()
-    #CLI(self.test.net)
 
   def teardown_class(cls):
     # Stop the Docker containers, and
