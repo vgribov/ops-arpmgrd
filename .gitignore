@@ -1,0 +1,2 @@
+# Ignore the build directory. It created by yocto during compilation.
+build

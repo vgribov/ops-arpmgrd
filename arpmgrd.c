@@ -82,6 +82,14 @@ static int netlink_request_neighbor_dump(int sock);
 const struct ovsrec_port * find_port(const char *port_name);
 const struct ovsrec_vrf * find_port_vrf(const char *port_name);
 
+/* Port cache structure */
+struct port_data {
+    const struct ovsrec_port *port;
+};
+
+/* Mapping of all ports */
+static struct shash all_ports = SHASH_INITIALIZER(&all_ports);
+
 /* Neighbor cache structure */
 struct neighbor_data {
     const struct ovsrec_vrf *vrf;       /* pointer to vrf */
@@ -91,14 +99,14 @@ struct neighbor_data {
     char network_family[5];             /* 'ipv4' or 'ipv6' */
     char mac[MAC_ADDRSTRLEN];                       /* Resolved Mac address */
     char state[32];                     /* ARP state */
-    char device[IF_NAMESIZE];           /* device ifindex */
+    char device[IF_NAMESIZE];           /* device */
     int  ifindex;                       /* if index of device in kernel */
     bool dp_hit;                        /* dp_hit value */
+    char vrf_name[OVSDB_VRF_NAME_MAXLEN]; /* VRF name */
 };
 
 /* Mapping of all the neighbors. */
 static struct shash all_neighbors = SHASH_INITIALIZER(&all_neighbors);
-static struct shash rows_pending_transaction = SHASH_INITIALIZER(&rows_pending_transaction);
 #define VRF_IP_KEY_MAX_LEN \
     (OVSDB_VRF_NAME_MAXLEN + INET6_ADDRSTRLEN + 2) /* includes delimiter */
 
@@ -354,6 +362,34 @@ static void delete_nbr_from_ovsdb(const struct ovsrec_neighbor *ovs_nbr)
     }
 }
 
+static void delete_cache_nbr_from_ovsdb(struct neighbor_data *cache_nbr)
+{
+    const struct ovsrec_neighbor *ovs_nbr;
+    bool found = false;
+    /*
+     * Check of cache entry has pointer to ovsrec, else search in idl
+     * and if row is found update in row pointer to cache entry for
+     * subsequent use
+     * */
+    if(cache_nbr->nbr) {
+        ovs_nbr = cache_nbr->nbr;
+        found = true;
+    } else {
+        OVSREC_NEIGHBOR_FOR_EACH (ovs_nbr, idl) {
+            if(!strcmp((ovs_nbr)->ip_address, cache_nbr->ip_address) &&
+                    ovs_nbr->vrf == cache_nbr->vrf) {
+                /* Update cache with pointer to ovsrec */
+                cache_nbr->nbr = ovs_nbr;
+                found = true;
+                break;
+            }
+        }
+    }
+    if(found) {
+        delete_nbr_from_ovsdb(ovs_nbr);
+    }
+}
+
 static void resync_db_with_kernel()
 {
     struct shash idl_neighbors;
@@ -470,6 +506,8 @@ static int update_neighbor_cache(int sock, struct ndmsg* ndm, struct rtattr* rta
                 VLOG_ERR("Unable to allocate a new neighbor.");
                 return 0;
             }
+
+            strcpy((*cache_nbr)->vrf_name, vrf->name);
             (*cache_nbr)->vrf = vrf;
             (*cache_nbr)->nbr = NULL;
             strcpy((*cache_nbr)->ip_address, destip);
@@ -612,13 +650,16 @@ static int parse_nlmsg(int sock, struct nlmsghdr *nlh, int msglen)
             char ifname[IF_NAMESIZE];
             const struct ovsrec_vrf *vrf = NULL;
 
-            if(ndm->ndm_family != AF_INET && ndm->ndm_family != AF_INET6)
+            if(ndm->ndm_family != AF_INET && ndm->ndm_family != AF_INET6) {
                 goto ndm_done;
+            }
 
             if_indextoname(ndm->ndm_ifindex, ifname);
+
             /* Ignore updates on "lo" interface */
-            if(!strcmp(ifname, LOOPBACK_INTERFACE_NAME))
+            if(!strcmp(ifname, LOOPBACK_INTERFACE_NAME)) {
                 goto ndm_done;
+            }
 
             /* Find vrf this interface/port is associated.*/
             vrf = find_port_vrf(ifname);
@@ -648,6 +689,7 @@ static int parse_nlmsg(int sock, struct nlmsghdr *nlh, int msglen)
                     del_neighbor(ndm, rta, vrf);
                 }
             }
+
             /*
              * If a new neighbor was added/modified, lets update OVSDB
              * */
@@ -655,6 +697,7 @@ static int parse_nlmsg(int sock, struct nlmsghdr *nlh, int msglen)
                 update_neighbor_to_ovsdb(cache_nbr, false);
             }
         }
+
 ndm_done:
         nlh = NLMSG_NEXT(nlh, msglen);
     }
@@ -825,16 +868,106 @@ arpmgrd_run__(void)
     }
 } /* arpmgrd_run__ */
 
-static void
-arpmgrd_reconfigure(struct ovsdb_idl *idl)
+/* Look for added or deleted ports
+ * - For added ports see if any neighbor was found on the port, update the neighbor's
+ *   ovsdb port
+ * - For deleted ports, delete all neighbors on the port.
+ */
+static void arpmgrd_reconfigure_port(struct ovsdb_idl *idl)
 {
-    unsigned int new_idl_seqno = ovsdb_idl_get_seqno(idl);
-    const struct ovsrec_neighbor *ovs_nbr;
+    struct shash sh_idl_ports;
+    const struct ovsrec_port *first_row, *row;
+    struct shash_node *sh_port, *sh_port_next;
+    struct shash_node *sh_nbr, *sh_nbr_next;
 
-    COVERAGE_INC(arpmgr);
-    if (new_idl_seqno == idl_seqno){
+    first_row = ovsrec_port_first(idl);
+
+    /*
+     * Check if any port rows were added or deleted.
+     * If no change just return from here
+     */
+    if(first_row && !OVSREC_IDL_ANY_TABLE_ROWS_INSERTED(first_row, idl_seqno) &&
+            !OVSREC_IDL_ANY_TABLE_ROWS_DELETED(first_row, idl_seqno)) {
+        VLOG_DBG("No Port cfg changes");
         return;
     }
+
+    /* Collect all the ports in the DB. */
+    shash_init(&sh_idl_ports);
+
+    OVSREC_PORT_FOR_EACH(row, idl) {
+        if (!shash_add_once(&sh_idl_ports, row->name, row)) {
+            VLOG_WARN("port %s specified twice", row->name);
+        }
+    }
+
+    /* Delete old ports which got deleted or got deleted and inserted */
+    if(OVSREC_IDL_ANY_TABLE_ROWS_DELETED(first_row, idl_seqno)) {
+        SHASH_FOR_EACH_SAFE(sh_port, sh_port_next, &all_ports) {
+            struct ovsrec_port *port_row = shash_find_data(&sh_idl_ports, sh_port->name);
+            struct port_data *port_cache =  sh_port->data;
+
+            if (!port_row || OVSREC_IDL_IS_ROW_INSERTED(port_row, idl_seqno)) {
+                VLOG_INFO("Port %s deleted r not part of VRF", sh_port->name);
+
+                /* Go though neighbors and remove neighbors with this port from DB
+                 * Cache will be updated by kernel */
+                SHASH_FOR_EACH_SAFE(sh_nbr, sh_nbr_next, &all_neighbors) {
+                    struct neighbor_data *nbr_cache = sh_nbr->data;
+
+                    if(nbr_cache->device && sh_port->name
+                            && !strcmp(nbr_cache->device, sh_port->name)) {
+                        delete_cache_nbr_from_ovsdb(nbr_cache);
+
+                        /* Delete the neighbor from cache */
+                        shash_delete(&all_neighbors, sh_nbr);
+
+                        free(nbr_cache);
+                    }
+                }
+
+                shash_delete(&all_ports, sh_port);
+                free(port_cache);
+            }
+        }
+    }
+
+    /* Add new ports. */
+    if(OVSREC_IDL_ANY_TABLE_ROWS_INSERTED(first_row, idl_seqno)) {
+        SHASH_FOR_EACH(sh_port, &sh_idl_ports) {
+            const struct ovsrec_port *port_row = (const struct ovsrec_port *) sh_port->data;
+
+            if (OVSREC_IDL_IS_ROW_INSERTED(port_row, idl_seqno)) {
+                VLOG_DBG("New port %s added", sh_port->name);
+                struct port_data *new_port = NULL;
+
+                /* Allocate structure to save state information for this port. */
+                new_port = xzalloc(sizeof(struct port_data));
+
+                if (!shash_add_once(&all_ports, port_row->name, new_port)) {
+                    VLOG_WARN("Port %s specified twice", port_row->name);
+                    free(new_port);
+                }
+
+                new_port->port = port_row;
+
+                /* Send netlink DUMP request to kernel to check for any existing
+                 * neighbors on this PORT */
+                if(nl_neighbor_sock > 0) {
+                    netlink_request_neighbor_dump(nl_neighbor_sock);
+                }
+            }
+        }
+    }
+
+    /* Destroy the shash of the IDL ports */
+    shash_destroy(&sh_idl_ports);
+}
+
+static void arpmgrd_reconfigure_neighbor(struct ovsdb_idl *idl)
+{
+    const struct ovsrec_neighbor *ovs_nbr;
+
     OVSREC_NEIGHBOR_FOR_EACH(ovs_nbr, idl) {
         struct neighbor_data *cache_nbr;
         bool dp_hit;
@@ -903,6 +1036,21 @@ arpmgrd_reconfigure(struct ovsdb_idl *idl)
             cache_nbr->dp_hit = dp_hit;
         }
     }
+}
+
+static void
+arpmgrd_reconfigure(struct ovsdb_idl *idl)
+{
+    unsigned int new_idl_seqno = ovsdb_idl_get_seqno(idl);
+
+
+    COVERAGE_INC(arpmgr);
+    if (new_idl_seqno == idl_seqno){
+        return;
+    }
+
+    arpmgrd_reconfigure_port(idl);
+    arpmgrd_reconfigure_neighbor(idl);
 
     idl_seqno = new_idl_seqno;
 } /* arpmgrd_reconfigure */
