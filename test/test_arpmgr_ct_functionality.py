@@ -425,7 +425,7 @@ class arpManagerFunctionalityTests( HalonTest ):
     # Change IP address of interface 2. This will delete 192.168.2.2 neighbor
     info("Configuring ip 1.1.1.1 on switch 1 interface 2\n")
     s1.cmdCLI("interface 2")
-    s1.cmdCLI("ip address 1.1.1.1/24")
+    s1.cmdCLI("no ip address 192.168.2.1/24")
     s1.cmdCLI("exit")
 
     output = s1.cmdCLI("do show arp")
