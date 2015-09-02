@@ -882,6 +882,10 @@ static void arpmgrd_reconfigure_port(struct ovsdb_idl *idl)
 
     first_row = ovsrec_port_first(idl);
 
+    if(!first_row) {
+        return;
+    }
+
     /*
      * Check if any port rows were added or deleted.
      * If no change just return from here
