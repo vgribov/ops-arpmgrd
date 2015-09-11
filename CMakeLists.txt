@@ -17,6 +17,8 @@ cmake_minimum_required (VERSION 2.8)
 
 set (ARPMGRD arpmgrd)
 project (${ARPMGRD})
+set (SRC_DIR src)
+set (INCL_DIR include)
 
 # Define compile flags
 set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -std=gnu99 -Wall -Werror")
@@ -26,12 +28,12 @@ include(FindPkgConfig)
 pkg_check_modules(OVSCOMMON REQUIRED libovscommon)
 pkg_check_modules(OVSDB REQUIRED libovsdb)
 
-include_directories (${PROJECT_BINARY_DIR} ${PROJECT_SOURCE_DIR}
+include_directories (${PROJECT_BINARY_DIR} ${PROJECT_SOURCE_DIR}/${INCL_DIR}
                      ${OVSCOMMON_INCLUDE_DIRS}
 )
 
 # Source files to build arpmgrd
-set (SOURCES arpmgrd.c)
+set (SOURCES ${SRC_DIR}/arpmgrd.c)
 
 # Rules to build arpmgrd
 add_executable (${ARPMGRD} ${SOURCES})
