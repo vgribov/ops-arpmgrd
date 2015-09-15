@@ -115,25 +115,25 @@ class arpManagerFunctionalityTests( HalonTest ):
     info("Ping Success\n")
 
     # Ping from host 1 to switch
-    #info("IPv6 Ping s1 from h1\n")
-    #output = h1.cmd("ping6 2000::1 -c2")
-    #status = parsePing(output)
-    #assert status, "Ping Failed"
-    #info("Ping Success\n")
+    info("IPv6 Ping s1 from h1\n")
+    output = h1.cmd("ping6 2000::1 -c2")
+    status = parsePing(output)
+    assert status, "Ping Failed"
+    info("Ping Success\n")
 
     # Ping from host 2 to switch
-    #info("IPv6 Ping s1 from h2\n")
-    #output = h2.cmd("ping6 2002::1 -c2")
-    #status = parsePing(output)
-    #assert status, "Ping Failed"
-    #info("Ping Success\n")
+    info("IPv6 Ping s1 from h2\n")
+    output = h2.cmd("ping6 2002::1 -c2")
+    status = parsePing(output)
+    assert status, "Ping Failed"
+    info("Ping Success\n")
 
     # Ping from host 1 to host 2
-    #info("IPv6 Ping h2 from h1\n")
-    #output = h1.cmd("ping6 2002::2 -c2")
-    #status = parsePing(output)
-    #assert status, "Ping Failed"
-    #info("Ping Success\n")
+    info("IPv6 Ping h2 from h1\n")
+    output = h1.cmd("ping6 2002::2 -c2")
+    status = parsePing(output)
+    assert status, "Ping Failed"
+    info("Ping Success\n")
 
   def arp_manager_ovsdb_update(self):
     info("\n\n=====================================================================\n")
@@ -190,14 +190,14 @@ class arpManagerFunctionalityTests( HalonTest ):
     state = words[state_index]
     assert state == 'reachable', "State incorrect, should be reachable"
 
-    #words = host1v6.split()
-    #assert words.index(max(words)) == max_index, "Unknown number of columns"
-    #mac = words[mac_index]
-    #assert mac == self.mac1, "Incorrect host1 MAC address"
-    #port = words[port_index]
-    #assert port == '1', "Incorrect port"
-    #state = words[state_index]
-    #assert state == 'reachable', "State incorrect, should be reachable"
+    words = host1v6.split()
+    assert words.index(max(words)) == max_index, "Unknown number of columns"
+    mac = words[mac_index]
+    assert mac == self.mac1, "Incorrect host1 MAC address"
+    port = words[port_index]
+    assert port == '1', "Incorrect port"
+    state = words[state_index]
+    assert state == 'reachable', "State incorrect, should be reachable"
 
     words = host2v4.split()
     assert words.index(max(words)) == max_index, "Unknown number of columns"
@@ -208,14 +208,14 @@ class arpManagerFunctionalityTests( HalonTest ):
     state = words[state_index]
     assert state == 'reachable', "State incorrect, should be reachable"
 
-    #words = host2v6.split()
-    #assert words.index(max(words)) == max_index, "Unknown number of columns"
-    #mac = words[mac_index]
-    #assert mac == self.mac2, "Incorrect host2 MAC address"
-    #port = words[port_index]
-    #assert port == '2', "Incorrect port"
-    #state = words[state_index]
-    #assert state == 'reachable', "State incorrect, should be reachable"
+    words = host2v6.split()
+    assert words.index(max(words)) == max_index, "Unknown number of columns"
+    mac = words[mac_index]
+    assert mac == self.mac2, "Incorrect host2 MAC address"
+    port = words[port_index]
+    assert port == '2', "Incorrect port"
+    state = words[state_index]
+    assert state == 'reachable', "State incorrect, should be reachable"
 
     info("Verified correct mac, port and state in Neighbor table\n\n")
 
@@ -488,7 +488,6 @@ class Test_arp_manager_functionality:
   def test_arp_manager_neighbor_fail(self):
     self.test.arp_manager_neighbor_fail()
   # Test for verifying arpmgr check dp hit to probe
-  @pytest.mark.skipif(True, reason="IPv6 ping does not work")
   def test_arp_manager_dp_hit(self):
     self.test.arp_manager_dp_hit()
   # Test for verifying arpmgr verify neighbor delete
