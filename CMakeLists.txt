@@ -15,7 +15,7 @@
 
 cmake_minimum_required (VERSION 2.8)
 
-set (ARPMGRD arpmgrd)
+set (ARPMGRD ops-arpmgrd)
 project (${ARPMGRD})
 set (SRC_DIR src)
 set (INCL_DIR include)
