@@ -813,7 +813,7 @@ const struct ovsrec_port
 const struct ovsrec_vrf
 *find_port_vrf(const char *port_name)
 {
-    const struct ovsrec_open_vswitch *ovs_row = ovsrec_open_vswitch_first(idl);
+    const struct ovsrec_system *ovs_row = ovsrec_system_first(idl);
     size_t i, j;
     for (i = 0; i < ovs_row->n_vrfs; i++)
     {
@@ -835,14 +835,14 @@ const struct ovsrec_vrf
 static inline void
 arpmgrd_chk_for_system_configured(void)
 {
-    const struct ovsrec_open_vswitch *ovs_vsw = NULL;
+    const struct ovsrec_system *ovs_vsw = NULL;
 
     if (system_configured) {
         /* Nothing to do if we're already configured. */
         return;
     }
 
-    ovs_vsw = ovsrec_open_vswitch_first(idl);
+    ovs_vsw = ovsrec_system_first(idl);
 
     if (ovs_vsw && (ovs_vsw->cur_cfg > (int64_t) 0)) {
         system_configured = true;
@@ -861,9 +861,9 @@ arpmgrd_init(const char *remote)
     ovsdb_idl_set_lock(idl, "ops_arpmgrd");
     ovsdb_idl_verify_write_only(idl);
 
-    ovsdb_idl_add_table(idl, &ovsrec_table_open_vswitch);
-    ovsdb_idl_add_column(idl, &ovsrec_open_vswitch_col_cur_cfg);
-    ovsdb_idl_add_column(idl, &ovsrec_open_vswitch_col_vrfs);
+    ovsdb_idl_add_table(idl, &ovsrec_table_system);
+    ovsdb_idl_add_column(idl, &ovsrec_system_col_cur_cfg);
+    ovsdb_idl_add_column(idl, &ovsrec_system_col_vrfs);
 
     ovsdb_idl_add_table(idl, &ovsrec_table_neighbor);
     ovsdb_idl_add_column(idl, &ovsrec_neighbor_col_vrf);
