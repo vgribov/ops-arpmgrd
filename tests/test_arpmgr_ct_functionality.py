@@ -16,11 +16,11 @@
 # under the License.
 
 import pytest
-from halonvsi.docker import *
-from halonvsi.halon import *
-from halonutils.halonutil import *
+from opsvsi.docker import *
+from opsvsi.opsvsitest import *
+from opsvsiutils.systemutil import *
 
-class arpManagerFunctionalityTests( HalonTest ):
+class arpManagerFunctionalityTests( OpsVsiTest ):
   # mac addresses for host 1 and host 2
   mac1 = None
   mac2 = None
@@ -30,13 +30,12 @@ class arpManagerFunctionalityTests( HalonTest ):
     # if you override this function, make sure to
     # either pass getNodeOpts() into hopts/sopts of the topology that
     # you build or into addHost/addSwitch calls
-    self.net = Mininet(topo=SingleSwitchTopo(k=2,
-                                             hopts=self.getHostOpts(),
-                                             sopts=self.getSwitchOpts()),
-                                             switch=HalonSwitch,
-                                             host=HalonHost,
-                                             link=HalonLink, controller=None,
-                                             build=True)
+    host_opts = self.getHostOpts()
+    switch_opts = self.getSwitchOpts()
+    arpmgrd_topo = SingleSwitchTopo(k=2, hopts=host_opts, sopts=switch_opts)
+    self.net = Mininet(arpmgrd_topo, switch=VsiOpenSwitch,
+                       host=Host, link=OpsVsiLink,
+                       controller=None, build=True)
 
   def arp_manager_configure_and_setup(self):
     s1 = self.net.switches[ 0 ]
@@ -58,10 +57,10 @@ class arpManagerFunctionalityTests( HalonTest ):
     s1.cmdCLI("exit")
 
     # Configure interface 1
-    s1.cmd("/usr/bin/ovs-vsctl set interface 1 user_config:admin=up")
+    s1.ovscmd("/usr/bin/ovs-vsctl set interface 1 user_config:admin=up")
 
     # Configure interface 2
-    s1.cmd("/usr/bin/ovs-vsctl set interface 2 user_config:admin=up")
+    s1.ovscmd("/usr/bin/ovs-vsctl set interface 2 user_config:admin=up")
 
     ifconfig = h1.cmd("ifconfig h1-eth0")
     words = ifconfig.split()
