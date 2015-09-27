@@ -19,7 +19,7 @@
 #ifndef ARPMGRD_H_
 #define ARPMGRD_H_
 
-#include "openhalon-idl.h"
+#include "openswitch-idl.h"
 
 #define ARPMGR_POLL_INTERVAL 5
 #define LOOPBACK_INTERFACE_NAME "lo"
