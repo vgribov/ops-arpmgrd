@@ -82,7 +82,7 @@ Set dp_hit to false for a neighbor entry, using ovsb-client:
 
 ```
 ovsdb-client transact
-'[ "OpenHalon",
+'[ "OpenSwitch",
     {
         "op" : "update",
         "table" : "Neighbor",
@@ -117,7 +117,7 @@ Entry state  should change from reachable to `stale`, since we will not probe.
 **DP_HIT true and reprobing**: Set dp_hit to false for a neighbor entry, using ovsb-client:
 ```
 ovsdb-client transact
-'[ "OpenHalon",
+'[ "OpenSwitch",
     {
         "op" : "update",
         "table" : "Neighbor",

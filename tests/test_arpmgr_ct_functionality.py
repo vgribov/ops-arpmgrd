@@ -314,7 +314,7 @@ class arpManagerFunctionalityTests( OpsVsiTest ):
     h1 = self.net.hosts[ 0 ]
     h2 = self.net.hosts[ 1 ]
 
-    json_cfg_dp_hit = "ovsdb-client transact '[ \"OpenHalon\",{\"op\" : \"update\",\"table\" : \"Neighbor\",\"where\":[[\"ip_address\",\"==\",\"2000::2\"]],\"row\":{\"status\":[\"map\",[[\"dp_hit\",\"false\"]]]}}]'"
+    json_cfg_dp_hit = "ovsdb-client transact '[ \"OpenSwitch\",{\"op\" : \"update\",\"table\" : \"Neighbor\",\"where\":[[\"ip_address\",\"==\",\"2000::2\"]],\"row\":{\"status\":[\"map\",[[\"dp_hit\",\"false\"]]]}}]'"
 
     s1.cmd(json_cfg_dp_hit)
     info("Configured dp hit to false for 2000::2. Entry should stale out within 45 seconds. Waiting.\n")
@@ -380,7 +380,7 @@ class arpManagerFunctionalityTests( OpsVsiTest ):
     info("States verified \n\n")
     info("Reset host 1 dp_hit to true\n")
 
-    json_cfg_dp_hit = "ovsdb-client transact '[ \"OpenHalon\",{\"op\" : \"update\",\"table\" : \"Neighbor\",\"where\":[[\"ip_address\",\"==\",\"2000::2\"]],\"row\":{\"status\":[\"map\",[[\"dp_hit\",\"true\"]]]}}]'"
+    json_cfg_dp_hit = "ovsdb-client transact '[ \"OpenSwitch\",{\"op\" : \"update\",\"table\" : \"Neighbor\",\"where\":[[\"ip_address\",\"==\",\"2000::2\"]],\"row\":{\"status\":[\"map\",[[\"dp_hit\",\"true\"]]]}}]'"
 
     s1.cmd(json_cfg_dp_hit)
     info("Configured dp hit to true for 2000::2. Entry should be reachable.\n")
