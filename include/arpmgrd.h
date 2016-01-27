@@ -23,7 +23,7 @@
 
 #define ARPMGR_POLL_INTERVAL 5
 #define LOOPBACK_INTERFACE_NAME "lo"
-#define RECV_BUFFER_SIZE 4096
+#define RECV_BUFFER_SIZE 8192
 #define IS_IPV4MULTICAST(address) ((address >> 28) == 14)
 #define MAC_ADDRSTRLEN 18
 

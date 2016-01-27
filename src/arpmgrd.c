@@ -24,6 +24,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <err.h>
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
 #include <netinet/in.h>
@@ -59,8 +60,24 @@ static char *parse_options(int argc, char *argv[], char **unixctl_path);
 OVS_NO_RETURN static void usage(void);
 static struct ovsdb_idl_txn *txn = NULL;
 static enum ovsdb_idl_txn_status txn_status = TXN_SUCCESS;
-static bool sync_with_kernel = true;
 static bool ovsdb_commit_required = false;
+
+typedef enum sync {
+    SYNC_NONE,
+    SYNC_REQUESTED,
+    SYNC_IN_PROGRESS,
+    SYNC_COMPLETE,
+    SYNC_FAILED,
+} sync_state_e;
+
+typedef enum sync_mode {
+    SYNC_WITH_CACHE_RESET,
+    SYNC_WITHOUT_CACHE_RESET,
+} sync_mode_e;
+
+static sync_mode_e sync_mode = SYNC_WITHOUT_CACHE_RESET;
+static sync_state_e sync_state = SYNC_REQUESTED;
+
 
 /* Netlink */
 struct nl_req {
@@ -216,6 +233,7 @@ netlink_socket_open(int protocol, int group)
 
     int sock = socket(AF_NETLINK, SOCK_RAW, protocol);
     if (sock < 0) {
+        VLOG_ERR("netlink socket open failed (%s)", strerror(errno));
         return sock;
     }
 
@@ -224,6 +242,7 @@ netlink_socket_open(int protocol, int group)
     s_addr.nl_pid = getpid();
     s_addr.nl_groups = group;
     if (bind(sock, (struct sockaddr *) &s_addr, sizeof(s_addr)) < 0) {
+        VLOG_ERR("netlink socket bind failed (%s)", strerror(errno));
         return -1;
     }
 
@@ -372,8 +391,8 @@ static void
 delete_nbr_from_ovsdb(const struct ovsrec_neighbor *ovs_nbr)
 {
     if (ovs_nbr) {
-        VLOG_INFO("Deleting neighbor vrf %s ip address %s from Neighbor table",
-                ovs_nbr->vrf->name, ovs_nbr->ip_address);
+        VLOG_DBG("Deleting neighbor vrf %s ip address %s from Neighbor table",
+                ovs_nbr->vrf ? ovs_nbr->vrf->name : "none", ovs_nbr->ip_address);
         ovsrec_neighbor_delete(ovs_nbr);
         ovsdb_commit_required = true;
     }
@@ -467,19 +486,32 @@ resync_db_with_kernel()
     }
 
     /*
-     * Go over neighbors in ovsdb
-     * If neighbor is not in cache
-     * i) delete ovsdb rec
+     * If current sync process of building cache from kernel failed
+     * let's not delete rows from OVSDB, since this will be expensive.
+     * Probably the rows never got update in our cache.
+     * We commit only any modified or new rows to OVSDB
      */
-    SHASH_FOR_EACH_SAFE(sh_node, sh_next, &idl_neighbors) {
-        struct neighbor_data *cache_nbr =
-                shash_find_data(&all_neighbors, sh_node->name);
-        if (!cache_nbr) {
-            /* delete the ovsrec */
-            const struct ovsrec_neighbor *ovs_nbr = sh_node->data;
-            delete_nbr_from_ovsdb(ovs_nbr);
+    if (sync_state != SYNC_FAILED) {
+        /*
+         * Go over neighbors in ovsdb
+         * If neighbor is not in cache
+         * i) delete ovsdb rec
+         */
+        SHASH_FOR_EACH_SAFE(sh_node, sh_next, &idl_neighbors) {
+            struct neighbor_data *cache_nbr =
+                    shash_find_data(&all_neighbors, sh_node->name);
+            if (!cache_nbr) {
+                /* delete the ovsrec */
+                const struct ovsrec_neighbor *ovs_nbr = sh_node->data;
+                delete_nbr_from_ovsdb(ovs_nbr);
+            }
         }
     }
+
+    if (sync_state != SYNC_FAILED && sync_state != SYNC_REQUESTED) {
+        sync_state = SYNC_COMPLETE;
+    }
+    VLOG_DBG("%s: Sync state is %d", __func__, sync_state);
 } /* resync_db_with_kernel */
 
 /*
@@ -527,7 +559,7 @@ update_neighbor_cache(int sock, struct ndmsg* ndm, struct rtattr* rta,
         }
 
         if (!found) {
-            VLOG_INFO("Adding new neighbor %s dev %s", destip, dev);
+            VLOG_DBG("Adding new neighbor %s dev %s", destip, dev);
 
             *cache_nbr = add_neighbor_to_cache(vrf->name, destip);
 
@@ -543,7 +575,7 @@ update_neighbor_cache(int sock, struct ndmsg* ndm, struct rtattr* rta,
             strcpy((*cache_nbr)->device, dev);
             (*cache_nbr)->ifindex = ndm->ndm_ifindex;
             (*cache_nbr)->port = find_port(dev);
-
+            strcpy((*cache_nbr)->mac, "");
             if (ndm->ndm_family == AF_INET) {
                 strcpy((*cache_nbr)->network_family, OVSREC_NEIGHBOR_ADDRESS_FAMILY_IPV4);
             } else if (ndm->ndm_family == AF_INET6)   {
@@ -561,7 +593,8 @@ update_neighbor_cache(int sock, struct ndmsg* ndm, struct rtattr* rta,
 
         case NUD_STALE:
             /* Send probe request to STALE neighbor and dp_hit set */
-            dp_hit = true;
+            /* Set dp_hit default to be false */
+            dp_hit = false;
             if ((*cache_nbr)->nbr) {
                 dp_hit = smap_get_bool(&(*cache_nbr)->nbr->status ,
                          OVSDB_NEIGHBOR_STATUS_DP_HIT,
@@ -587,13 +620,13 @@ update_neighbor_cache(int sock, struct ndmsg* ndm, struct rtattr* rta,
             break;
 
         case NUD_FAILED:
-            VLOG_INFO("Neighbor resolution failed %s", destip);
+            VLOG_DBG("Neighbor resolution failed %s", destip);
             strcpy((*cache_nbr)->state, OVSREC_NEIGHBOR_STATE_FAILED);
             strcpy((*cache_nbr)->mac, "");
             break;
 
         case NUD_INCOMPLETE:
-            VLOG_INFO("Neighbor resolution incomplete %s", destip);
+            VLOG_DBG("Neighbor resolution incomplete %s", destip);
             strcpy((*cache_nbr)->state, OVSREC_NEIGHBOR_STATE_INCOMPLETE);
             strcpy((*cache_nbr)->mac, "");
             break;
@@ -656,7 +689,7 @@ del_neighbor(struct ndmsg* ndm, struct rtattr* rta,
 
             if(found) {
                 delete_nbr_from_ovsdb(ovs_nbr);
-                VLOG_INFO("Neighbor delete: %s\n",
+                VLOG_DBG("Neighbor delete: %s\n",
                        destip);
             } else {
                 VLOG_ERR("Unable to find neighbor entry for %s in vrf %s. Cannot delete.", destip, vrf->name);
@@ -759,11 +792,29 @@ receive_neighbor_update(int sock)
         msg.msg_iov = &iov;
         msg.msg_iovlen = 1;
 
-        ret = recvmsg(sock, &msg, MSG_DONTWAIT);
-        VLOG_DBG("recv message %d", ret);
-        if (ret < 0){
+        if(sync_mode == SYNC_WITH_CACHE_RESET) {
+            ret = recvmsg(sock, &msg, 0);
+        } else {
+            ret = recvmsg(sock, &msg, MSG_DONTWAIT);
+        }
+        VLOG_DBG("recvmsg returned %d", ret);
+
+        if (ret < 0) {
+            if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                VLOG_ERR("err = %s",  strerror(errno) );
+                /* Kernel messages could be overwhelming,
+                   suspend receive temporarily */
+                if(sync_state == SYNC_NONE) {
+                    sync_mode = SYNC_WITH_CACHE_RESET;
+                    sync_state = SYNC_REQUESTED;
+                }
+                else {
+                    sync_state = SYNC_FAILED;
+                }
+            }
             return ret;
         }
+
         nlh = (struct nlmsghdr*) buffer;
 
         switch (nlh->nlmsg_type) {
@@ -787,6 +838,7 @@ receive_neighbor_update(int sock)
             break;
         }
     }
+
     return 0;
 } /* receive_neighbor_update */
 
@@ -1037,10 +1089,13 @@ arpmgrd_reconfigure_neighbor(struct ovsdb_idl *idl)
          * */
         cache_nbr = find_neighbor_in_cache(ovs_nbr->vrf->name, ovs_nbr->ip_address);
         if (!cache_nbr) {
-            VLOG_INFO("Did not find ovsdb neighbor in cache. ip %s, vrf %s",
+            VLOG_DBG("Did not find ovsdb neighbor in cache. ip %s, vrf %s",
                     ovs_nbr->ip_address, ovs_nbr->vrf->name);
             continue;
         }
+
+        /* Update the ovsdb rec in cache */
+        cache_nbr->nbr = ovs_nbr;
 
         /* Get dp_hit from status column */
         dp_hit = smap_get_bool(&ovs_nbr->status, OVSDB_NEIGHBOR_STATUS_DP_HIT,
@@ -1124,7 +1179,45 @@ arpmgrd_run(void)
 
     arpmgrd_chk_for_system_configured();
     if (system_configured) {
+
+        /* End "sync in progress state", and reset */
+        if(sync_state == SYNC_COMPLETE) {
+            VLOG_DBG("sync_state is COMPLETE");
+            sync_state = SYNC_NONE;
+            if(sync_mode == SYNC_WITH_CACHE_RESET) {
+                close_netlink_socket(nl_neighbor_sock);
+                VLOG_DBG("closed netlink socket");
+                nl_neighbor_sock = 0;
+            }
+            sync_mode = SYNC_WITHOUT_CACHE_RESET;
+        }
+
+        /* Suspend kernel notifications, and begin resync
+           of OVSDB with kernel */
+        if(sync_state == SYNC_REQUESTED || sync_state == SYNC_FAILED) {
+
+            VLOG_DBG("sync_state changed from %d to IN_PROGRESS", sync_state);
+            if(sync_mode == SYNC_WITH_CACHE_RESET) {
+                /* Clear up our cache for resync */
+                shash_destroy_free_data(&all_neighbors);
+                shash_init(&all_neighbors);
+
+                if(sync_state != SYNC_FAILED) {
+                   /* Close the previous socket */
+                   close_netlink_socket(nl_neighbor_sock);
+                   VLOG_DBG("closed netlink socket");
+                   nl_neighbor_sock = 0;
+
+                   /* Open new socket for resync */
+                   nl_neighbor_sock = netlink_socket_open(NETLINK_ROUTE, 0);
+                }
+            }
+            /* Update state to sync_in_progress */
+            sync_state = SYNC_IN_PROGRESS;
+        }
+
         if (!nl_neighbor_sock) {
+            VLOG_DBG("opening netlink socket");
             nl_neighbor_sock = netlink_socket_open(NETLINK_ROUTE, RTMGRP_NEIGH);
         }
         /*
@@ -1142,7 +1235,8 @@ arpmgrd_run(void)
         /* Some transaction failure case. Lets resync with kernel */
         if(txn_status != TXN_SUCCESS && txn_status != TXN_UNCHANGED) {
             VLOG_INFO("Retry failed %d", txn_status);
-            sync_with_kernel = true;
+            sync_mode = SYNC_WITHOUT_CACHE_RESET;
+            sync_state = SYNC_IN_PROGRESS;
         }
 
         if (txn) {
@@ -1155,7 +1249,7 @@ arpmgrd_run(void)
         arpmgrd_reconfigure(idl);
         arpmgrd_run__();
 
-        if (sync_with_kernel) {
+        if (sync_state != SYNC_NONE) {
             /* Delete previous transaction
              * We will resync with kernel
              * Create a new transaction
@@ -1167,7 +1261,6 @@ arpmgrd_run(void)
             txn = NULL;
             txn = ovsdb_idl_txn_create(idl);
             resync_db_with_kernel();
-            sync_with_kernel = false;
         }
 
         if(ovsdb_commit_required == true) {
