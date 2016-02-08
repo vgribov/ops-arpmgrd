@@ -41,6 +41,9 @@ target_link_libraries (${ARPMGRD} ${OVSCOMMON_LIBRARIES}
                        ${OVSDB_LIBRARIES}
                        -lpthread -lrt)
 
+# Build ops-ledd cli shared libraries.
+add_subdirectory(src/cli)
+
 # Rules to install arpmgrd binary in rootfs
 install(TARGETS ${ARPMGRD}
     RUNTIME DESTINATION bin)
