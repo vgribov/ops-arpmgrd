@@ -488,6 +488,7 @@ class arpManagerFunctionalityTests(OpsVsiTest):
         info("########## End of delete entry test ##########\n")
 
 
+@pytest.mark.skipif(True, reason="Disabling old tests")
 class Test_arp_manager_functionality:
     # Create the Mininet topology based on mininet.
 

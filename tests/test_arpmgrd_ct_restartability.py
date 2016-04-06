@@ -408,6 +408,7 @@ class arpManagerRestartabiltyTests(OpsVsiTest):
         info("Failed entries state updated db after arpmgrd restart\n")
 
 
+@pytest.mark.skipif(True, reason="Disabling old tests")
 class Test_arp_manager_restartability:
 
     def setup_class(cls):
