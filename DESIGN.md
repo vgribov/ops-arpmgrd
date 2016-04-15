@@ -3,11 +3,9 @@ High level design of ops-arpmgrd
 
 The **ops-arpmgrd** process receives neighbor notifications from the kernel and manages rows in the Neighbor database table.
 
-
 Responsibilities
 -----------------
 The **ops-arpmgrd** process is responsible for monitoring neighbor entries in the kernel (IPv4 and IPv6) and updating the Neighbor table with the neighbor entries. This daemon also refreshes kernel entries for neighbor entries with active traffic in the datapath.
-
 
 Design choices
 -----------------
