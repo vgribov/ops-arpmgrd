@@ -330,7 +330,7 @@ class arpManagerFunctionalityTests(OpsVsiTest):
              "Entry should stale out within 45 seconds. Waiting.\n")
 
         max_index = self.column_count - 1
-        timer = 45
+        timer = 50
         host1v4 = None
         host1v6 = None
         host2v4 = None
@@ -404,7 +404,7 @@ class arpManagerFunctionalityTests(OpsVsiTest):
         s1.cmd(json_cfg_dp_hit)
         info("Configured dp hit to true for 2000::2. "
              "Entry should be reachable.\n")
-
+        time.sleep(3);
         output = s1.cmdCLI("do show arp")
         output = output + "\n" + s1.cmdCLI("do show ipv6 neighbors")
         info(output + "\n\n")
@@ -443,7 +443,7 @@ class arpManagerFunctionalityTests(OpsVsiTest):
         s1.cmdCLI("interface 2")
         s1.cmdCLI("no ip address 192.168.2.1/24")
         s1.cmdCLI("exit")
-
+        time.sleep(2)
         output = s1.cmdCLI("do show arp")
         output = output + "\n" + s1.cmdCLI("do show ipv6 neighbors")
         info(output + "\n\n")
