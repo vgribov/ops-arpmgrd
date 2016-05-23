@@ -65,6 +65,8 @@ static int port_data_alloc = 0;
 static int nbr_alloc_cnt=0;
 static int ovsrec_neighbor_alloc_cnt = 0;
 static int idl_nbr_force_ins_cnt,ovs_idl_nbr_cnt, idl_nbr_force_del_cnt;
+static int nl_dump_res_size;
+static int nl_dump_req_cnt, nl_dump_res_nof_multi_cnt, nl_dump_res_cnt, nl_probe_req_cnt, ovsdb_tr_trigger_cnt;
 static int all_neighbors_len;
 typedef enum sync {
     SYNC_NONE,
@@ -81,7 +83,7 @@ typedef enum sync_mode {
 
 static sync_mode_e sync_mode = SYNC_WITHOUT_CACHE_RESET;
 static sync_state_e sync_state = SYNC_REQUESTED;
-
+static int gbl_nl_pkt_process_cnt_per_iter = 100;
 
 /* Netlink */
 struct nl_req {
@@ -234,7 +236,7 @@ find_neighbor_in_cache(char *vrf_name, char *ip_address)
  * Send a neighbor dump request on socket
  * */
 static int
-netlink_socket_open(int protocol, int group)
+netlink_socket_open(int protocol, int group, bool kernel_dump)
 {
     struct sockaddr_nl s_addr;
 
@@ -253,7 +255,11 @@ netlink_socket_open(int protocol, int group)
         return -1;
     }
 
-    netlink_request_neighbor_dump(sock);
+    if(kernel_dump){
+        netlink_request_neighbor_dump(sock);
+        if(sync_state == SYNC_REQUESTED)
+            sync_state = SYNC_IN_PROGRESS;
+    }
     return sock;
 } /* netlink_socket_open */
 
@@ -284,7 +290,9 @@ netlink_request_neighbor_dump(int sock)
 
     if (send(sock, &req, req.nlh.nlmsg_len, 0) == -1) {
         VLOG_ERR("Failed to send netlink request for neighbor dump");
+        return;
     }
+    nl_dump_req_cnt++;
     return;
 } /* netlink_request_neighbor_dump */
 
@@ -322,8 +330,9 @@ send_neighbor_probe(int sock, int ifindex, int family, void* ip, int plen)
 
     if (send(sock, &req, req.nlh.nlmsg_len, 0) == -1) {
         VLOG_ERR("Failed to send netlink request for neighbor probe");
+        return;
     }
-
+    nl_probe_req_cnt++;
     return;
 } /* send_neighbor_probe */
 
@@ -792,76 +801,89 @@ ndm_done:
 static int
 receive_neighbor_update(int sock)
 {
+    int pkt_cnt = 0;
+    int lcl_nl_dump_res_size = 0;
     int multipart_msg_end = 0;
-    while (!multipart_msg_end) {
-        struct sockaddr_nl nladdr;
-        struct msghdr msg;
-        struct iovec iov;
-        struct nlmsghdr *nlh;
-        char buffer[RECV_BUFFER_SIZE];
-        int ret;
+    while (pkt_cnt < gbl_nl_pkt_process_cnt_per_iter){
+        lcl_nl_dump_res_size = 0;
+        while (!multipart_msg_end) {
+            struct sockaddr_nl nladdr;
+            struct msghdr msg;
+            struct iovec iov;
+            struct nlmsghdr *nlh;
+            char buffer[RECV_BUFFER_SIZE];
+            int ret;
 
-        iov.iov_base = (void *)buffer;
-        iov.iov_len = sizeof(buffer);
-        msg.msg_name = (void *)&(nladdr);
-        msg.msg_namelen = sizeof(nladdr);
-        msg.msg_iov = &iov;
-        msg.msg_iovlen = 1;
+            iov.iov_base = (void *)buffer;
+            iov.iov_len = sizeof(buffer);
+            msg.msg_name = (void *)&(nladdr);
+            msg.msg_namelen = sizeof(nladdr);
+            msg.msg_iov = &iov;
+            msg.msg_iovlen = 1;
 
-        if(sync_mode == SYNC_WITH_CACHE_RESET) {
-            ret = recvmsg(sock, &msg, 0);
-        } else {
-            ret = recvmsg(sock, &msg, MSG_DONTWAIT);
-        }
-        VLOG_DBG("recvmsg returned %d, nbr_alloc_cnt %d, port_data_alloc %d,",
-            ret,nbr_alloc_cnt, port_data_alloc);
-
-        if (ret < 0) {
-            if (errno != EAGAIN && errno != EWOULDBLOCK) {
-                VLOG_ERR("err = %s ,sync_state %d, nbr_alloc_cnt %d, port_data_alloc %d, \n \
-ovsrec_neighbor_alloc_cnt %d, force_ins_cnt %d force_del_cnt %d, ovs_idl_nbr_cnt %d,all_neighbors_len %d \n",
-                strerror(errno),sync_state,nbr_alloc_cnt,
-                port_data_alloc,ovsrec_neighbor_alloc_cnt,
-                idl_nbr_force_ins_cnt,idl_nbr_force_del_cnt,ovs_idl_nbr_cnt,
-                all_neighbors_len);
-                /* Kernel messages could be overwhelming,
-                   suspend receive temporarily */
-                if(sync_state == SYNC_NONE) {
-                    sync_mode = SYNC_WITH_CACHE_RESET;
-                    sync_state = SYNC_REQUESTED;
-                }
-                else {
-                    sync_state = SYNC_FAILED;
-                }
+            if(sync_mode == SYNC_WITH_CACHE_RESET) {
+                ret = recvmsg(sock, &msg, 0);
+            } else {
+                ret = recvmsg(sock, &msg, MSG_DONTWAIT);
             }
-            return ret;
+            VLOG_DBG("recvmsg returned %d, nbr_alloc_cnt %d, port_data_alloc %d,",
+                ret,nbr_alloc_cnt, port_data_alloc);
+
+            if (ret < 0) {
+                if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                    VLOG_ERR("err = %s ,sync_state %d, nbr_alloc_cnt %d, port_data_alloc %d, \n \
+    ovsrec_neighbor_alloc_cnt %d, force_ins_cnt %d force_del_cnt %d, ovs_idl_nbr_cnt %d,all_neighbors_len %d \n",
+                    strerror(errno),sync_state,nbr_alloc_cnt,
+                    port_data_alloc,ovsrec_neighbor_alloc_cnt,
+                    idl_nbr_force_ins_cnt,idl_nbr_force_del_cnt,ovs_idl_nbr_cnt,
+                    all_neighbors_len);
+                    VLOG_ERR("nl_dump_req_cnt %d, nl_dump_res_cnt %d, not_multi_part_dump_res_cnt %d \n\
+    nl_probe_req_cnt %d, nl_dump_res_size %d, ovsdb_tr_trigger_cnt %d",
+    nl_dump_req_cnt,nl_dump_res_cnt, nl_dump_res_nof_multi_cnt,
+    nl_probe_req_cnt, nl_dump_res_size,
+    ovsdb_tr_trigger_cnt);
+                    /* Kernel messages could be overwhelming,
+                       suspend receive temporarily */
+                    if(sync_state == SYNC_NONE) {
+                        sync_mode = SYNC_WITH_CACHE_RESET;
+                        sync_state = SYNC_REQUESTED;
+                    }
+                    else {
+                        sync_state = SYNC_FAILED;
+                    }
+                }
+                return ret;
+            }
+            lcl_nl_dump_res_size += ret;
+            nlh = (struct nlmsghdr*) buffer;
+
+            switch (nlh->nlmsg_type) {
+
+            case RTM_NEWNEIGH:
+            case RTM_DELNEIGH:
+                parse_nlmsg(sock, nlh, ret);
+                break;
+
+            case NLMSG_DONE:
+                VLOG_DBG("End of multipart message\n");
+                multipart_msg_end++;
+                nl_dump_res_cnt++;
+                break;
+
+            default:
+                VLOG_DBG("received nl msg_type %u", nlh->nlmsg_type);
+                break;
+            }
+
+            if (!(nlh->nlmsg_flags & NLM_F_MULTI)) {
+                VLOG_DBG("end of message. Not a multipart message\n");
+                nl_dump_res_nof_multi_cnt++;
+                break;
+            }
         }
-
-        nlh = (struct nlmsghdr*) buffer;
-
-        switch (nlh->nlmsg_type) {
-
-        case RTM_NEWNEIGH:
-        case RTM_DELNEIGH:
-            parse_nlmsg(sock, nlh, ret);
-            break;
-
-        case NLMSG_DONE:
-            VLOG_DBG("End of multipart message\n");
-            multipart_msg_end++;
-            break;
-
-        default:
-            VLOG_DBG("received nl msg_type %u", nlh->nlmsg_type);
-            break;
-        }
-
-        if (!(nlh->nlmsg_flags & NLM_F_MULTI)) {
-            VLOG_DBG("end of message. Not a multipart message\n");
-            break;
-        }
+        nl_dump_res_size = (nl_dump_res_size > lcl_nl_dump_res_size)? nl_dump_res_size : lcl_nl_dump_res_size;
+        pkt_cnt ++;
     }
-
     return 0;
 } /* receive_neighbor_update */
 
@@ -1187,6 +1209,7 @@ arpmgrd_reconfigure(struct ovsdb_idl *idl)
 static void
 arpmgrd_run(void)
 {
+    bool kernel_dump = true;
     daemonize_complete();
     vlog_enable_async();
     VLOG_INFO_ONCE("%s (OpenSwitch arpmgrd) %s", program_name, VERSION);
@@ -1228,7 +1251,9 @@ arpmgrd_run(void)
             ovsdb_idl_txn_destroy(txn);
             txn = NULL;
         }
-        if (sync_state != SYNC_NONE) {
+        if ((sync_state == SYNC_IN_PROGRESS) ||
+            (sync_state == SYNC_FAILED))
+         {
             /* Delete previous transaction
              * We will resync with kernel
              * Create a new transaction
@@ -1240,6 +1265,8 @@ arpmgrd_run(void)
             txn = NULL;
             txn = ovsdb_idl_txn_create(idl);
             resync_db_with_kernel();
+    VLOG_INFO("Sync with kernel was called: nbr_alloc_cnt %d, multi_part_res %d, no_n_res %d, nl_dump_res_size %d",
+            nbr_alloc_cnt,nl_dump_res_cnt, nl_dump_res_nof_multi_cnt,nl_dump_res_size);
         }
 
         /* End "sync in progress state", and reset */
@@ -1250,6 +1277,7 @@ arpmgrd_run(void)
                 close_netlink_socket(nl_neighbor_sock);
                 VLOG_DBG("closed netlink socket");
                 nl_neighbor_sock = 0;
+                kernel_dump = false;
             }
             sync_mode = SYNC_WITHOUT_CACHE_RESET;
         }
@@ -1272,7 +1300,7 @@ arpmgrd_run(void)
                    nl_neighbor_sock = 0;
 
                    /* Open new socket for resync */
-                   nl_neighbor_sock = netlink_socket_open(NETLINK_ROUTE, 0);
+                   nl_neighbor_sock = netlink_socket_open(NETLINK_ROUTE, 0, kernel_dump);
                 }
             }
             /* Update state to sync_in_progress */
@@ -1281,7 +1309,7 @@ arpmgrd_run(void)
 
         if (!nl_neighbor_sock) {
             VLOG_DBG("opening netlink socket");
-            nl_neighbor_sock = netlink_socket_open(NETLINK_ROUTE, RTMGRP_NEIGH);
+            nl_neighbor_sock = netlink_socket_open(NETLINK_ROUTE, RTMGRP_NEIGH, kernel_dump);
         }
 
         if(!txn){
@@ -1294,6 +1322,7 @@ arpmgrd_run(void)
 
         if(ovsdb_commit_required == true) {
             txn_status = ovsdb_idl_txn_commit(txn);
+            ovsdb_tr_trigger_cnt ++;
             VLOG_DBG("Txn status after commit = %d", txn_status);
             ovsdb_commit_required = false;
             if (txn_status == TXN_SUCCESS) {
@@ -1353,6 +1382,11 @@ all_neighbors_len %d\n",nbr_alloc_cnt,
                 all_neighbors_len);
     ds_put_format(&ds,"size_neighbor_data = %lu, size_ovsrec_neighbor = %lu\n",sizeof(struct neighbor_data),
     sizeof(struct ovsrec_neighbor));
+     ds_put_format(&ds,"nl_dump_req_cnt %d, nl_dump_res_cnt %d, not_multi_part_dump_res_cnt %d \n\
+nl_probe_req_cnt %d, nl_dump_res_size %d,ovsdb_tr_trigger_cnt %d \n",
+nl_dump_req_cnt,nl_dump_res_cnt, nl_dump_res_nof_multi_cnt,
+nl_probe_req_cnt, nl_dump_res_size,
+ovsdb_tr_trigger_cnt);
     unixctl_command_reply(conn, ds_cstr(&ds));
     ds_destroy(&ds);
 }
