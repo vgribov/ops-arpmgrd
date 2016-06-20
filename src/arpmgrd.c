@@ -136,7 +136,7 @@ static struct shash all_neighbors = SHASH_INITIALIZER(&all_neighbors);
 static int
 get_hash_key(char* vrf_name, char *ip, char *key)
 {
-    sprintf(key, "%s-%s", vrf_name, ip);
+    snprintf(key, VRF_IP_KEY_MAX_LEN, "%s-%s", vrf_name, ip);
     return strlen(key);
 } /* get_hash_key */
 
@@ -252,6 +252,7 @@ netlink_socket_open(int protocol, int group, bool kernel_dump)
     s_addr.nl_groups = group;
     if (bind(sock, (struct sockaddr *) &s_addr, sizeof(s_addr)) < 0) {
         VLOG_ERR("netlink socket bind failed (%s)", strerror(errno));
+        close(sock);
         return -1;
     }
 
