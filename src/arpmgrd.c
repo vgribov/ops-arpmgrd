@@ -236,7 +236,7 @@ find_neighbor_in_cache(char *vrf_name, char *ip_address)
  * Send a neighbor dump request on socket
  * */
 static int
-netlink_socket_open(int protocol, int group, bool kernel_dump)
+netlink_socket_open(int protocol, int group)
 {
     struct sockaddr_nl s_addr;
 
@@ -245,7 +245,13 @@ netlink_socket_open(int protocol, int group, bool kernel_dump)
         VLOG_ERR("netlink socket open failed (%s)", strerror(errno));
         return sock;
     }
-
+    uint32_t rxbufsize = 2097152; // 2 Mb
+    int err = setsockopt(sock, SOL_SOCKET, SO_RCVBUFFORCE,&rxbufsize, sizeof(rxbufsize));
+    if(err){
+        VLOG_ERR("setsockopt: SO_RCVBUFFORCE err %d",errno);
+        close(sock);
+        return -1;
+    }
     memset((void *) &s_addr, 0, sizeof(s_addr));
     s_addr.nl_family = AF_NETLINK;
     s_addr.nl_pid = getpid();
@@ -256,11 +262,9 @@ netlink_socket_open(int protocol, int group, bool kernel_dump)
         return -1;
     }
 
-    if(kernel_dump){
-        netlink_request_neighbor_dump(sock);
-        if(sync_state == SYNC_REQUESTED)
-            sync_state = SYNC_IN_PROGRESS;
-    }
+    netlink_request_neighbor_dump(sock);
+    if(sync_state == SYNC_REQUESTED)
+        sync_state = SYNC_IN_PROGRESS;
     return sock;
 } /* netlink_socket_open */
 
@@ -329,7 +333,7 @@ send_neighbor_probe(int sock, int ifindex, int family, void* ip, int plen)
     memcpy(RTA_DATA(rta), ip, plen);
     req.nlh.nlmsg_len = NLMSG_ALIGN(req.nlh.nlmsg_len) + RTA_ALIGN(len);
 
-    if (send(sock, &req, req.nlh.nlmsg_len, 0) == -1) {
+    if (send(sock, &req, req.nlh.nlmsg_len, MSG_DONTWAIT) == -1) {
         VLOG_ERR("Failed to send netlink request for neighbor probe");
         return;
     }
@@ -629,7 +633,6 @@ update_neighbor_cache(int sock, struct ndmsg* ndm, struct rtattr* rta,
 
             VLOG_DBG("dp hit state = %d ip %s", dp_hit, destip);
             (*cache_nbr)->dp_hit = dp_hit;
-
             if (sock && dp_hit) {
                 send_neighbor_probe(sock, ndm->ndm_ifindex, ndm->ndm_family,
                     RTA_DATA(rta), RTA_PAYLOAD(rta));
@@ -640,7 +643,8 @@ update_neighbor_cache(int sock, struct ndmsg* ndm, struct rtattr* rta,
                  * notification for FAILED state
                  */
                 strcpy((*cache_nbr)->state, OVSREC_NEIGHBOR_STATE_REACHABLE);
-            } else {
+            } else
+            {
                 strcpy((*cache_nbr)->state, OVSREC_NEIGHBOR_STATE_STALE);
             }
             break;
@@ -872,7 +876,7 @@ receive_neighbor_update(int sock)
                 break;
 
             default:
-                VLOG_DBG("received nl msg_type %u", nlh->nlmsg_type);
+                VLOG_ERR("received nl msg_type %u", nlh->nlmsg_type);
                 break;
             }
 
@@ -1210,7 +1214,6 @@ arpmgrd_reconfigure(struct ovsdb_idl *idl)
 static void
 arpmgrd_run(void)
 {
-    bool kernel_dump = true;
     daemonize_complete();
     vlog_enable_async();
     VLOG_INFO_ONCE("%s (OpenSwitch arpmgrd) %s", program_name, VERSION);
@@ -1278,7 +1281,6 @@ arpmgrd_run(void)
                 close_netlink_socket(nl_neighbor_sock);
                 VLOG_DBG("closed netlink socket");
                 nl_neighbor_sock = 0;
-                kernel_dump = false;
             }
             sync_mode = SYNC_WITHOUT_CACHE_RESET;
         }
@@ -1301,7 +1303,7 @@ arpmgrd_run(void)
                    nl_neighbor_sock = 0;
 
                    /* Open new socket for resync */
-                   nl_neighbor_sock = netlink_socket_open(NETLINK_ROUTE, 0, kernel_dump);
+                   nl_neighbor_sock = netlink_socket_open(NETLINK_ROUTE, 0);
                 }
             }
             /* Update state to sync_in_progress */
@@ -1310,7 +1312,7 @@ arpmgrd_run(void)
 
         if (!nl_neighbor_sock) {
             VLOG_DBG("opening netlink socket");
-            nl_neighbor_sock = netlink_socket_open(NETLINK_ROUTE, RTMGRP_NEIGH, kernel_dump);
+            nl_neighbor_sock = netlink_socket_open(NETLINK_ROUTE, RTMGRP_NEIGH);
         }
 
         if(!txn){
