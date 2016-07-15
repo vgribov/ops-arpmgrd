@@ -48,6 +48,7 @@
 #include "stream.h"
 #include "dynamic-string.h"
 #include "arpmgrd.h"
+#include "ops-utils.h"
 
 VLOG_DEFINE_THIS_MODULE(arpmgrd);
 COVERAGE_DEFINE(arpmgr);
@@ -124,6 +125,8 @@ struct neighbor_data {
     char device[IF_NAMESIZE];           /* device */
     int  ifindex;                       /* if index of device in kernel */
     bool dp_hit;                        /* dp_hit value */
+    bool in_use_by_routes_unresolved;   /* the neighbor entry is a next hop */
+    bool routes_nh;
     char vrf_name[OVSDB_VRF_NAME_MAXLEN]; /* VRF name */
 };
 
@@ -350,7 +353,25 @@ update_neighbor_to_ovsdb(struct neighbor_data *cache_nbr,
 {
     const struct ovsrec_neighbor *ovs_nbr;
     bool found = false;
-
+    /* Some of the fields are not yet populated for the externally generated neighbor. Lets do them here*/
+    if(cache_nbr->in_use_by_routes_unresolved){
+        cache_nbr->in_use_by_routes_unresolved = false;
+        ovs_nbr = cache_nbr->nbr;
+        ovsrec_neighbor_set_address_family(ovs_nbr, cache_nbr->network_family);
+        ovsrec_neighbor_set_port(ovs_nbr, cache_nbr->port);
+        /* I assumeexternal module may not know proper mac, so lets' add it */
+        if(!ovs_nbr->mac)
+            ovsrec_neighbor_set_mac(ovs_nbr, cache_nbr->mac);
+        else if (strcmp(ovs_nbr->mac, cache_nbr->mac)) {
+            ovsrec_neighbor_set_mac(ovs_nbr, cache_nbr->mac);
+        }
+        /* The state information may have created but might be updated by kernel */
+        if (ovs_nbr->state && (strcmp(ovs_nbr->state, cache_nbr->state))) {
+            ovsrec_neighbor_set_state(ovs_nbr, cache_nbr->state);
+        }
+        ovsdb_commit_required = true;
+        return 1;
+    }
     if (!insert_row_without_checking) {
         /*
          * Check of cache entry has pointer to ovsrec, else search in idl
@@ -557,6 +578,9 @@ update_neighbor_cache(int sock, struct ndmsg* ndm, struct rtattr* rta,
     char destmac[MAC_ADDRSTRLEN];
     struct shash_node *sh_node = NULL;
     bool dp_hit;
+    /* Kernel migh update first seen entry as STALE, externally added entry that are updated as stale need to be
+     * probed.so skip_dp_hit for them */
+    bool skip_dp_hit = false;
 
     if (rta->rta_type == NDA_DST) {
         bool found = false;
@@ -585,7 +609,23 @@ update_neighbor_cache(int sock, struct ndmsg* ndm, struct rtattr* rta,
         sh_node = shash_find(&all_neighbors, key);
         if (sh_node) {
             *cache_nbr = sh_node->data;
-            found = true;
+            if((*cache_nbr)->in_use_by_routes_unresolved){
+                /*ovs_nbr entry already created and some fields alreay created others are filled here */
+                if(strcmp((*cache_nbr)->vrf_name, vrf->name)){
+                    VLOG_ERR("Configured VRF name %s is not matching with received %s.",
+                        (*cache_nbr)->vrf_name, vrf->name);
+                }
+                (*cache_nbr)->vrf = vrf;
+                strcpy((*cache_nbr)->device, dev);
+                (*cache_nbr)->ifindex = ndm->ndm_ifindex;
+                (*cache_nbr)->port = find_port(dev);
+                skip_dp_hit = true;
+                found = true;
+                goto end_chache_nbr_init;
+            }
+            else {
+                found = true;
+            }
         }
 
         if (!found) {
@@ -614,7 +654,7 @@ update_neighbor_cache(int sock, struct ndmsg* ndm, struct rtattr* rta,
 
             (*cache_nbr)->nbr = NULL;
         }
-
+end_chache_nbr_init:
         switch (ndm->ndm_state) {
 
         case NUD_REACHABLE:
@@ -625,7 +665,7 @@ update_neighbor_cache(int sock, struct ndmsg* ndm, struct rtattr* rta,
             /* Send probe request to STALE neighbor and dp_hit set */
             /* Set dp_hit default to be false */
             dp_hit = false;
-            if ((*cache_nbr)->nbr) {
+            if ((!skip_dp_hit) && ((*cache_nbr)->nbr)) {
                 dp_hit = smap_get_bool(&(*cache_nbr)->nbr->status ,
                          OVSDB_NEIGHBOR_STATUS_DP_HIT,
                          OVSDB_NEIGHBOR_STATUS_MAP_DP_HIT_DEFAULT);
@@ -633,7 +673,8 @@ update_neighbor_cache(int sock, struct ndmsg* ndm, struct rtattr* rta,
 
             VLOG_DBG("dp hit state = %d ip %s", dp_hit, destip);
             (*cache_nbr)->dp_hit = dp_hit;
-            if (sock && dp_hit) {
+            if (sock &&
+               (dp_hit ||((*cache_nbr)->routes_nh))) {
                 send_neighbor_probe(sock, ndm->ndm_ifindex, ndm->ndm_family,
                     RTA_DATA(rta), RTA_PAYLOAD(rta));
                 /*
@@ -981,6 +1022,7 @@ arpmgrd_init(const char *remote)
     ovsdb_idl_add_column(idl, &ovsrec_neighbor_col_state);
     ovsdb_idl_omit_alert(idl, &ovsrec_neighbor_col_state);
     ovsdb_idl_add_column(idl, &ovsrec_neighbor_col_status);
+    ovsdb_idl_add_column(idl, &ovsrec_neighbor_col_in_use_by_routes);
 
     ovsdb_idl_add_table(idl, &ovsrec_table_vrf);
     ovsdb_idl_add_column(idl, &ovsrec_vrf_col_name);
@@ -1118,19 +1160,96 @@ arpmgrd_reconfigure_port(struct ovsdb_idl *idl)
     shash_destroy(&sh_idl_ports);
 } /* arpmgrd_reconfigure_port */
 
+/*Updates the cache_nbr with the externally configured ovs_nbr entry.
+* IP, VRF, state and might be mac field populated in ovs_nbr entry. this function may re reused for static entry add.
+* This returns ip_add family by checking ip address.
+*/
+static void
+update_configured_entry_to_neighbor_cache(const struct ovsrec_neighbor *ovs_nbr,
+                                            struct neighbor_data *cache_nbr,
+                                            int *family,
+                                            char *mac_addr, char *state)
+{
+    const struct ovsrec_vrf *vrf = ovs_nbr->vrf;
+    bool is_ipv6 = false;
+
+    if (strchr(ovs_nbr->ip_address, ':')) {
+        is_ipv6 = true;
+        *family = AF_INET6;
+    }
+    else {
+        *family = AF_INET;
+    }
+    if(!is_ipv6)  {
+        strcpy((cache_nbr)->network_family, OVSREC_NEIGHBOR_ADDRESS_FAMILY_IPV4);
+    } else  {
+        strcpy((cache_nbr)->network_family, OVSREC_NEIGHBOR_ADDRESS_FAMILY_IPV6);
+    }
+
+    strcpy((cache_nbr)->vrf_name, vrf->name);
+    strcpy((cache_nbr)->ip_address, ovs_nbr->ip_address);
+    strcpy((cache_nbr)->state, state);
+    if(mac_addr){
+        strcpy((cache_nbr)->mac, mac_addr);
+    }
+    (cache_nbr)->nbr = ovs_nbr;
+}
+
+
 static void
 arpmgrd_reconfigure_neighbor(struct ovsdb_idl *idl)
 {
-    const struct ovsrec_neighbor *ovs_nbr;
-
+    const struct ovsrec_neighbor *ovs_nbr, *first_row;
+    first_row = ovsrec_neighbor_first(idl);
+    if (first_row &&
+            (!OVSREC_IDL_ANY_TABLE_ROWS_INSERTED(first_row, idl_seqno))&&
+            !OVSREC_IDL_ANY_TABLE_ROWS_MODIFIED(first_row, idl_seqno)) {
+        VLOG_INFO("No rows in table modified.");
+        return;
+    }
     OVSREC_NEIGHBOR_FOR_EACH (ovs_nbr, idl) {
         struct neighbor_data *cache_nbr;
         bool dp_hit;
-        if (ovs_nbr && !OVSREC_IDL_ANY_TABLE_ROWS_MODIFIED(ovs_nbr, idl_seqno)) {
-            VLOG_DBG("No rows in table modified.");
-            return;
-        }
+        if(ovs_nbr &&
+                OVSREC_IDL_IS_ROW_INSERTED(ovs_nbr, idl_seqno)&&
+                (ovs_nbr->in_use_by_routes && (*(ovs_nbr->in_use_by_routes) == true) &&
+                        (0 == strcmp(ovs_nbr->state, OVSREC_NEIGHBOR_STATE_INCOMPLETE)))
+                ){
+            VLOG_INFO("Neighbor entry is added by external module. ip %s, vrf %s",
+                    ovs_nbr->ip_address, ovs_nbr->vrf->name);
+            /*Process for neighbor entry add into cache */
+            struct neighbor_data *cache_nbr = NULL;
+            int family = AF_INET;
+            cache_nbr = find_neighbor_in_cache(ovs_nbr->vrf->name, ovs_nbr->ip_address);
+            if (!cache_nbr) {
+                cache_nbr = add_neighbor_to_cache(ovs_nbr->vrf->name, ovs_nbr->ip_address);
+                if (!(cache_nbr)) {
+                    VLOG_ERR("Unable to add new neighbor.<ip> %s <vrf>%s",
+                                    ovs_nbr->ip_address,ovs_nbr->vrf->name);
+                    return ;
+                }
+                char *mac_addr = NULL;
+                char *state = OVSREC_NEIGHBOR_STATE_INCOMPLETE;
+                update_configured_entry_to_neighbor_cache(ovs_nbr, cache_nbr, &family, mac_addr,state);
+                cache_nbr->in_use_by_routes_unresolved = true;
+                cache_nbr->routes_nh = true;
 
+                /*Entry added in nbr cache, now initiate a ping to get added into the kernel ND table
+                * Kernel shall find the proper egress interface for the ping pkt
+                *   create a neighbour entry, mark its state as 'incomplete'
+                *   Resolve its mac either by arp/ND protocol.
+                *   Notify back to arpmgrd via netlink notification.
+                */
+                VLOG_INFO("externerally added entry is placed in cache, invoking ping...");
+                if(family == AF_INET6){
+                    ping6(ovs_nbr->ip_address);
+                }
+                else {
+                    ping4(ovs_nbr->ip_address);
+                }
+            }
+            continue;
+        }
         if (ovs_nbr && !OVSREC_IDL_IS_ROW_MODIFIED(ovs_nbr, idl_seqno)) {
             VLOG_DBG("Neighbor row not modified");
             continue;
@@ -1151,6 +1270,42 @@ arpmgrd_reconfigure_neighbor(struct ovsdb_idl *idl)
 
         /* Update the ovsdb rec in cache */
         cache_nbr->nbr = ovs_nbr;
+
+        /* Get in_use_by_routes from column in_use_by_routes. This takes care of the cases:
+         * 1. next_hop found by routing deamon is already added in Neighbor tbl.arpmgrd should send probe to keep it
+         * REACHABLE.
+         * 2. next_hop is no more referenced by any route routing deamon make in_use_by_routes to false and arpmgrd should
+         * not send probe to keep it REACHABLE.
+        */
+        if(ovs_nbr->in_use_by_routes &&
+            (cache_nbr->routes_nh != (*(ovs_nbr->in_use_by_routes)))){
+            cache_nbr->routes_nh = (*(ovs_nbr->in_use_by_routes));
+        }
+        /* routing deamon make in_use_by_routes to true for an existing entry in Neighbor Tbl whose state is
+         * STALE. Then send probe to keep the entry REACHABLE.*/
+        if (cache_nbr->routes_nh &&(0 == strcmp(cache_nbr->state,
+                OVSREC_NEIGHBOR_STATE_STALE)) &&
+                (nl_neighbor_sock > 0)) {
+            int family = AF_INET;
+            uint32_t dst[8];
+            int plen = 0;
+
+            if (strcmp(ovs_nbr->address_family,
+                       OVSREC_NEIGHBOR_ADDRESS_FAMILY_IPV6) == 0) {
+                family = AF_INET6;
+                inet_pton(AF_INET6, ovs_nbr->ip_address, dst);
+                plen = 16;
+            } else if (strcmp(ovs_nbr->address_family,
+                              OVSREC_NEIGHBOR_ADDRESS_FAMILY_IPV4) == 0) {
+                family = AF_INET;
+                inet_pton(AF_INET, ovs_nbr->ip_address, dst);
+                plen = 4;
+            }
+            send_neighbor_probe(nl_neighbor_sock, cache_nbr->ifindex,
+                                 family, dst, plen);
+            strcpy(cache_nbr->state, OVSREC_NEIGHBOR_STATE_REACHABLE);
+            update_neighbor_to_ovsdb(cache_nbr, false);
+        }
 
         /* Get dp_hit from status column */
         dp_hit = smap_get_bool(&ovs_nbr->status, OVSDB_NEIGHBOR_STATUS_DP_HIT,
