@@ -52,6 +52,8 @@
 
 VLOG_DEFINE_THIS_MODULE(arpmgrd);
 COVERAGE_DEFINE(arpmgr);
+
+#define MAX_NH_PING_CNT 5
 static struct ovsdb_idl *idl;
 static unsigned int idl_seqno;
 static unixctl_cb_func arpmgrd_unixctl_debug_cnt;
@@ -127,9 +129,9 @@ struct neighbor_data {
     bool dp_hit;                        /* dp_hit value */
     bool in_use_by_routes_unresolved;   /* the neighbor entry is a next hop */
     bool routes_nh;
-    char vrf_name[OVSDB_VRF_NAME_MAXLEN]; /* VRF name */
+    unsigned int ping_retry_cnt;         /* retry ping cnt for routes_nh */
+    char vrf_name[OVSDB_VRF_NAME_MAXLEN];/* VRF name */
 };
-
 /* Mapping of all the neighbors. */
 static struct shash all_neighbors = SHASH_INITIALIZER(&all_neighbors);
 #define VRF_IP_KEY_MAX_LEN \
@@ -659,6 +661,7 @@ end_chache_nbr_init:
 
         case NUD_REACHABLE:
             strcpy((*cache_nbr)->state, OVSREC_NEIGHBOR_STATE_REACHABLE);
+            (*cache_nbr)->ping_retry_cnt = 0;
             break;
 
         case NUD_STALE:
@@ -692,6 +695,26 @@ end_chache_nbr_init:
 
         case NUD_FAILED:
             VLOG_DBG("Neighbor resolution failed %s", destip);
+            if((*cache_nbr)->routes_nh && ((*cache_nbr)->ping_retry_cnt < MAX_NH_PING_CNT)) {
+                VLOG_ERR("pinging again for the in_use_by_route %s, destip = %s", (*cache_nbr)->ip_address, destip);
+                 if((*cache_nbr)->network_family){
+                     if(0 == strcmp((*cache_nbr)->network_family, OVSREC_NEIGHBOR_ADDRESS_FAMILY_IPV4))
+                     {
+                        ping4((*cache_nbr)->ip_address);
+                     }
+                     else if(0 == strcmp((*cache_nbr)->network_family,OVSREC_NEIGHBOR_ADDRESS_FAMILY_IPV6))
+                     {
+                        ping6((*cache_nbr)->ip_address);
+                     }
+                    strcpy((*cache_nbr)->state, OVSREC_NEIGHBOR_STATE_INCOMPLETE);
+                    strcpy((*cache_nbr)->mac, "");
+                    (*cache_nbr)->ping_retry_cnt ++;
+                    break;
+                }
+                else {
+                    VLOG_ERR("Address family not valid for in_use_routes entry %s",destip);
+                }
+            }
             strcpy((*cache_nbr)->state, OVSREC_NEIGHBOR_STATE_FAILED);
             strcpy((*cache_nbr)->mac, "");
             break;
@@ -1213,7 +1236,7 @@ arpmgrd_reconfigure_neighbor(struct ovsdb_idl *idl)
         if(ovs_nbr &&
                 OVSREC_IDL_IS_ROW_INSERTED(ovs_nbr, idl_seqno)&&
                 (ovs_nbr->in_use_by_routes && (*(ovs_nbr->in_use_by_routes) == true) &&
-                        (0 == strcmp(ovs_nbr->state, OVSREC_NEIGHBOR_STATE_INCOMPLETE)))
+                 ovs_nbr->state && (0 == strcmp(ovs_nbr->state, OVSREC_NEIGHBOR_STATE_INCOMPLETE)))
                 ){
             VLOG_INFO("Neighbor entry is added by external module. ip %s, vrf %s",
                     ovs_nbr->ip_address, ovs_nbr->vrf->name);
