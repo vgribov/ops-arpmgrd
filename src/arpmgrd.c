@@ -125,6 +125,7 @@ struct port_data {
 
 /* Mapping of all ports */
 static struct shash all_ports = SHASH_INITIALIZER(&all_ports);
+#define ARP_STATE_LEN 32
 
 /* Neighbor cache structure */
 struct neighbor_data {
@@ -134,11 +135,11 @@ struct neighbor_data {
     char ip_address[INET6_ADDRSTRLEN];  /* Always nonnull. */
     char network_family[5];             /* 'ipv4' or 'ipv6' */
     char mac[MAC_ADDRSTRLEN];           /* Resolved Mac address */
-    char state[32];                     /* ARP state */
+    char state[ARP_STATE_LEN];          /* ARP state */
     char device[IF_NAMESIZE];           /* device */
     int  ifindex;                       /* if index of device in kernel */
     bool dp_hit;                        /* dp_hit value */
-    bool in_use_by_routes_unresolved;   /* the neighbor entry is a next hop */
+    bool nbr_unresolved;   /* the neighbor entry is a next hop */
     bool routes_nh;
     unsigned int ping_retry_cnt;         /* retry ping cnt for routes_nh */
     unsigned int revalidate_del;         /*to avoid db update for nbr entry referenced by route(s) if kernel deletes it
@@ -369,8 +370,8 @@ update_neighbor_to_ovsdb(struct neighbor_data *cache_nbr,
     const struct ovsrec_neighbor *ovs_nbr;
     bool found = false;
     /* Some of the fields are not yet populated for the externally generated neighbor. Lets do them here*/
-    if(cache_nbr->in_use_by_routes_unresolved){
-        cache_nbr->in_use_by_routes_unresolved = false;
+    if(cache_nbr->nbr_unresolved){
+        cache_nbr->nbr_unresolved = false;
         ovs_nbr = cache_nbr->nbr;
         ovsrec_neighbor_set_address_family(ovs_nbr, cache_nbr->network_family);
         ovsrec_neighbor_set_port(ovs_nbr, cache_nbr->port);
@@ -413,17 +414,32 @@ update_neighbor_to_ovsdb(struct neighbor_data *cache_nbr,
      * else insert a new row in ovsdb.
      */
     if (found) {
-        if (strcmp(ovs_nbr->mac, cache_nbr->mac)) {
+        if(!ovs_nbr->mac && cache_nbr->mac) {
             ovsrec_neighbor_set_mac(ovs_nbr, cache_nbr->mac);
             ovsdb_commit_required = true;
         }
-        if (ovs_nbr->port != cache_nbr->port) {
+        else if (strncmp(ovs_nbr->mac, cache_nbr->mac, MAC_ADDRSTRLEN)) {
+            ovsrec_neighbor_set_mac(ovs_nbr, cache_nbr->mac);
+            ovsdb_commit_required = true;
+        }
+        if(!ovs_nbr->port && cache_nbr->port) {
             ovsrec_neighbor_set_port(ovs_nbr, cache_nbr->port);
             ovsdb_commit_required = true;
         }
-        if (strcmp(ovs_nbr->state, cache_nbr->state)) {
+        else if (ovs_nbr->port != cache_nbr->port) {
+            ovsrec_neighbor_set_port(ovs_nbr, cache_nbr->port);
+            ovsdb_commit_required = true;
+        }
+        if(!ovs_nbr->state && cache_nbr->state) {
             ovsrec_neighbor_set_state(ovs_nbr, cache_nbr->state);
             ovsdb_commit_required = true;
+        }
+        else if (strncmp(ovs_nbr->state, cache_nbr->state,ARP_STATE_LEN)) {
+            ovsrec_neighbor_set_state(ovs_nbr, cache_nbr->state);
+            ovsdb_commit_required = true;
+        }
+        if(!ovs_nbr->address_family && cache_nbr->network_family) {
+            ovsrec_neighbor_set_address_family(ovs_nbr, cache_nbr->network_family);
         }
     } else {
         ovs_nbr = ovsrec_neighbor_insert(txn);
@@ -625,7 +641,7 @@ update_neighbor_cache(int sock, struct ndmsg* ndm, struct rtattr* rta,
         sh_node = shash_find(&all_neighbors, key);
         if (sh_node) {
             *cache_nbr = sh_node->data;
-            if((*cache_nbr)->in_use_by_routes_unresolved){
+            if((*cache_nbr)->nbr_unresolved){
                 /*ovs_nbr entry already created and some fields alreay created others are filled here */
                 if(strcmp((*cache_nbr)->vrf_name, vrf->name)){
                     VLOG_ERR("Configured VRF name %s is not matching with received %s.",
@@ -1289,7 +1305,7 @@ arpmgrd_reconfigure_port(struct ovsdb_idl *idl)
                                     strcpy(nbr_cache->state, OVSREC_NEIGHBOR_STATE_INCOMPLETE);
                                     strcpy(nbr_cache->mac, "");
                                     if(!nbr_cache->nbr) {
-                                        VLOG_ERR("Delete attmpted cache entrydoes not have ovs_nbr set.");
+                                        VLOG_ERR("Delete attmpted cache entry does not have ovs_nbr set.");
                                         continue;
                                     }
                                     const struct ovsrec_neighbor *ovs_nbr = nbr_cache->nbr;
@@ -1387,47 +1403,49 @@ arpmgrd_reconfigure_neighbor(struct ovsdb_idl *idl)
     OVSREC_NEIGHBOR_FOR_EACH (ovs_nbr, idl) {
         struct neighbor_data *cache_nbr;
         bool dp_hit;
-        if(ovs_nbr &&
-                OVSREC_IDL_IS_ROW_INSERTED(ovs_nbr, idl_seqno)&&
-                (ovs_nbr->in_use_by_routes && (*(ovs_nbr->in_use_by_routes) == true)) &&
-                (!ovs_nbr->state ||
-                 (ovs_nbr->state && (0 == strcmp(ovs_nbr->state, OVSREC_NEIGHBOR_STATE_INCOMPLETE))))
-                ){
-            VLOG_INFO("Neighbor entry is added by external module. ip %s, vrf %s",
-                    ovs_nbr->ip_address, ovs_nbr->vrf->name);
+        if(ovs_nbr && ovs_nbr->in_use_by_routes &&
+                OVSREC_IDL_IS_ROW_INSERTED(ovs_nbr, idl_seqno)) {
             /*Process for neighbor entry add into cache */
             struct neighbor_data *cache_nbr = NULL;
             int family = AF_INET;
             cache_nbr = find_neighbor_in_cache(ovs_nbr->vrf->name, ovs_nbr->ip_address);
             if (!cache_nbr) {
+                VLOG_INFO("Neighbor entry is added by external module. ip %s, vrf %s",
+                    ovs_nbr->ip_address, ovs_nbr->vrf->name);
                 cache_nbr = add_neighbor_to_cache(ovs_nbr->vrf->name, ovs_nbr->ip_address);
                 if (!(cache_nbr)) {
                     VLOG_ERR("Unable to add new neighbor.<ip> %s <vrf>%s",
-                                    ovs_nbr->ip_address,ovs_nbr->vrf->name);
+                            ovs_nbr->ip_address,ovs_nbr->vrf->name);
                     return ;
                 }
                 char *mac_addr = NULL;
                 char *state = OVSREC_NEIGHBOR_STATE_INCOMPLETE;
                 update_configured_entry_to_neighbor_cache(ovs_nbr, cache_nbr, &family, mac_addr,state);
-                cache_nbr->in_use_by_routes_unresolved = true;
-                cache_nbr->routes_nh = true;
+                cache_nbr->nbr_unresolved = true;
+                if((ovs_nbr->in_use_by_routes && (*(ovs_nbr->in_use_by_routes) == true)) &&
+                        (!ovs_nbr->state ||
+                         (ovs_nbr->state && (0 == strcmp(ovs_nbr->state, OVSREC_NEIGHBOR_STATE_INCOMPLETE))))
+                  ) {
+                    cache_nbr->routes_nh = true;
 
-                /*Entry added in nbr cache, now initiate a ping to get added into the kernel ND table
-                * Kernel shall find the proper egress interface for the ping pkt
-                *   create a neighbour entry, mark its state as 'incomplete'
-                *   Resolve its mac either by arp/ND protocol.
-                *   Notify back to arpmgrd via netlink notification.
-                */
-                VLOG_INFO("externerally added entry is placed in cache, invoking ping...");
-                int ping_err = -1;
-                if(family == AF_INET6){
-                    ping_err = ping6(ovs_nbr->ip_address);
-                }
-                else {
-                    ping_err = ping4(ovs_nbr->ip_address);
-                }
-                if(ping_err < 0) {
-                    reinstal_nh = true;
+                    /*Entry added in nbr cache, now initiate a ping to get added into the kernel ND table
+                     * Kernel shall find the proper egress interface for the ping pkt
+                     *   create a neighbour entry, mark its state as 'incomplete'
+                     *   Resolve its mac either by arp/ND protocol.
+                     *   Notify back to arpmgrd via netlink notification.
+                     */
+                    VLOG_INFO("externerally added entry is placed in cache, invoking ping...");
+                    int ping_err = -1;
+                    if(family == AF_INET6){
+                        ping_err = ping6(ovs_nbr->ip_address);
+                    }
+                    else {
+                        ping_err = ping4(ovs_nbr->ip_address);
+                    }
+                    if(ping_err < 0) {
+                        VLOG_INFO("Need reinstal_nh %d",__LINE__);
+                        reinstal_nh = true;
+                    }
                 }
             }
             continue;
@@ -1461,6 +1479,8 @@ arpmgrd_reconfigure_neighbor(struct ovsdb_idl *idl)
         */
         if(ovs_nbr->in_use_by_routes &&
             (cache_nbr->routes_nh != (*(ovs_nbr->in_use_by_routes)))){
+            VLOG_INFO("Modified in_use_by_routes for %s from %d to %d",
+                cache_nbr->ip_address, cache_nbr->routes_nh, (*(ovs_nbr->in_use_by_routes)));
             cache_nbr->routes_nh = (*(ovs_nbr->in_use_by_routes));
         }
         /* routing deamon make in_use_by_routes to true for an existing entry in Neighbor Tbl whose state is
@@ -1487,6 +1507,24 @@ arpmgrd_reconfigure_neighbor(struct ovsdb_idl *idl)
                                  family, dst, plen);
             strcpy(cache_nbr->state, OVSREC_NEIGHBOR_STATE_REACHABLE);
             update_neighbor_to_ovsdb(cache_nbr, false);
+        }
+        if (cache_nbr->routes_nh &&(0 == strcmp(cache_nbr->state,
+                OVSREC_NEIGHBOR_STATE_INCOMPLETE))
+                ) {
+            int ping_err = 0;
+            VLOG_INFO("routes_nh is set for %s",cache_nbr->ip_address);
+            if (strcmp(cache_nbr->network_family,
+                       OVSREC_NEIGHBOR_ADDRESS_FAMILY_IPV6) == 0) {
+                 ping_err = ping6(cache_nbr->ip_address);
+            }
+            else if (strcmp(cache_nbr->network_family,
+                              OVSREC_NEIGHBOR_ADDRESS_FAMILY_IPV4) == 0) {
+                 ping_err = ping4(cache_nbr->ip_address);
+            }
+            if(ping_err < 0) {
+                VLOG_INFO("Need reinstal_nh %d",__LINE__);
+                reinstal_nh = true;
+            }
         }
 
         /* Get dp_hit from status column */
@@ -1682,7 +1720,7 @@ arpmgrd_run(void)
                         && !strcmp(nbr_cache->device, pport_data->port_up_reinstal.name)) {
 send_ping:
                     if(nbr_cache->routes_nh && (nbr_cache->ping_retry_cnt < MAX_NH_PING_CNT)) {
-                        VLOG_INFO("pinging %s to restore nh again", nbr_cache->ip_address);
+                        VLOG_INFO("pinging %s to restore nh in port %s again", nbr_cache->ip_address, nbr_cache->device);
                         if(!strcmp(nbr_cache->network_family,
                                     OVSREC_NEIGHBOR_ADDRESS_FAMILY_IPV4)) {
                             ping_err = ping4(nbr_cache->ip_address);
