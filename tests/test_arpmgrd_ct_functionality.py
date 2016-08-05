@@ -283,6 +283,7 @@ class arpManagerFunctionalityTests(OpsVsiTest):
         h1.cmd("ip route add 192.168.2.0/24 via 192.168.1.1")
         h1.cmd("ping 192.168.2.2 -c2")
 
+        time.sleep(5)
         output = s1.cmdCLI("do show arp")
         output = output + "\n" + s1.cmdCLI("do show ipv6 neighbors")
         info(output + "\n\n")
@@ -474,6 +475,7 @@ class arpManagerFunctionalityTests(OpsVsiTest):
 
         h2.cmd("ping 192.168.2.1 -c2")
 
+        time.sleep(3)
         output = s1.cmdCLI("do show arp")
         output = output + "\n" + s1.cmdCLI("do show ipv6 neighbors")
         info(output + "\n\n")
