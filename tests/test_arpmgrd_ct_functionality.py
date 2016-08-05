@@ -146,6 +146,9 @@ class arpManagerFunctionalityTests(OpsVsiTest):
         s1 = self.net.switches[0]
         h1 = self.net.hosts[0]
         h2 = self.net.hosts[1]
+        output1 = s1.cmd("ip netns exec swns ip neigh show")
+        info(output1 + "\n\n")
+        time.sleep(3)
         # Show Neighbors
         info("Show neighbors\n")
         # workaround to get latest update call show twice, needs to be fixed in
