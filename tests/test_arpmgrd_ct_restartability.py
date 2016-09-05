@@ -124,6 +124,7 @@ class arpManagerRestartabiltyTests(OpsVsiTest):
         h1 = self.net.hosts[0]
         h2 = self.net.hosts[1]
         # Show Neighbors
+        time.sleep(5)
         info("Show neighbors\n")
         output = s1.cmdCLI("do show arp")
 
@@ -353,6 +354,7 @@ class arpManagerRestartabiltyTests(OpsVsiTest):
             lladdr 00:bb:cc:dd:ee:ff dev 1")
 
         info("Arpmgrd not yet started. show arp output\n")
+        time.sleep(5)
         output = s1.cmdCLI("do show arp")
 
         # Restart arpmgrd
@@ -384,13 +386,14 @@ class arpManagerRestartabiltyTests(OpsVsiTest):
 
         # All the neighbor entries should have been deleted
         info("Arpmgrd not yet started. show arp output\n")
+        time.sleep(5)
         output = s1.cmdCLI("do show arp")
 
         # Restart arpmgrd
         info("Restarting arpmgrd\n")
         s1.cmd("ip netns exec swns ops-arpmgrd --pidfile --detach")
 
-        time.sleep(10)
+        time.sleep(15)
         output = s1.cmdCLI("do show arp")
         rows = output.split("\n")
         rowcount = len(rows) - 5

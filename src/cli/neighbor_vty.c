@@ -92,7 +92,7 @@ show_arp_info (char* vrf_name)
           continue;
 
       /* non-IPv4 entries, ignore and move to next record */
-      if (strcmp (row->address_family, OVSREC_NEIGHBOR_ADDRESS_FAMILY_IPV4))
+      if (row->address_family && strcmp (row->address_family, OVSREC_NEIGHBOR_ADDRESS_FAMILY_IPV4))
         continue;
 
       DISPLAY_NEIGHBOR_IP4_ADDR (vty, row);
@@ -148,7 +148,7 @@ show_ipv6_neighbors (char* vrf_name)
          continue;
 
       /* non-IPv6 entries, ignore and move to next record */
-      if (strcmp (row->address_family, OVSREC_NEIGHBOR_ADDRESS_FAMILY_IPV6))
+      if (row->address_family && strcmp (row->address_family, OVSREC_NEIGHBOR_ADDRESS_FAMILY_IPV6))
         continue;
 
       DISPLAY_NEIGHBOR_IP6_ADDR (vty, row);

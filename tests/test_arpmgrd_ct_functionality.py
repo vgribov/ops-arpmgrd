@@ -146,6 +146,9 @@ class arpManagerFunctionalityTests(OpsVsiTest):
         s1 = self.net.switches[0]
         h1 = self.net.hosts[0]
         h2 = self.net.hosts[1]
+        output1 = s1.cmd("ip netns exec swns ip neigh show")
+        info(output1 + "\n\n")
+        time.sleep(3)
         # Show Neighbors
         info("Show neighbors\n")
         # workaround to get latest update call show twice, needs to be fixed in
@@ -280,6 +283,7 @@ class arpManagerFunctionalityTests(OpsVsiTest):
         h1.cmd("ip route add 192.168.2.0/24 via 192.168.1.1")
         h1.cmd("ping 192.168.2.2 -c2")
 
+        time.sleep(5)
         output = s1.cmdCLI("do show arp")
         output = output + "\n" + s1.cmdCLI("do show ipv6 neighbors")
         info(output + "\n\n")
@@ -330,7 +334,7 @@ class arpManagerFunctionalityTests(OpsVsiTest):
              "Entry should stale out within 45 seconds. Waiting.\n")
 
         max_index = self.column_count - 1
-        timer = 45
+        timer = 50
         host1v4 = None
         host1v6 = None
         host2v4 = None
@@ -404,7 +408,7 @@ class arpManagerFunctionalityTests(OpsVsiTest):
         s1.cmd(json_cfg_dp_hit)
         info("Configured dp hit to true for 2000::2. "
              "Entry should be reachable.\n")
-
+        time.sleep(3);
         output = s1.cmdCLI("do show arp")
         output = output + "\n" + s1.cmdCLI("do show ipv6 neighbors")
         info(output + "\n\n")
@@ -443,7 +447,7 @@ class arpManagerFunctionalityTests(OpsVsiTest):
         s1.cmdCLI("interface 2")
         s1.cmdCLI("no ip address 192.168.2.1/24")
         s1.cmdCLI("exit")
-
+        time.sleep(2)
         output = s1.cmdCLI("do show arp")
         output = output + "\n" + s1.cmdCLI("do show ipv6 neighbors")
         info(output + "\n\n")
@@ -471,6 +475,7 @@ class arpManagerFunctionalityTests(OpsVsiTest):
 
         h2.cmd("ping 192.168.2.1 -c2")
 
+        time.sleep(3)
         output = s1.cmdCLI("do show arp")
         output = output + "\n" + s1.cmdCLI("do show ipv6 neighbors")
         info(output + "\n\n")
