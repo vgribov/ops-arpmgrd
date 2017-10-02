@@ -2013,7 +2013,7 @@ all_neighbors_len %d\n",nbr_alloc_cnt,
                 port_data_alloc,ovsrec_neighbor_alloc_cnt,
                 idl_nbr_force_ins_cnt,idl_nbr_force_del_cnt,ovs_idl_nbr_cnt,
                 all_neighbors_len);
-    ds_put_format(&ds,"size_neighbor_data = %lu, size_ovsrec_neighbor = %lu\n",sizeof(struct neighbor_data),
+    ds_put_format(&ds,"size_neighbor_data = %zu, size_ovsrec_neighbor = %zu\n",sizeof(struct neighbor_data),
     sizeof(struct ovsrec_neighbor));
      ds_put_format(&ds,"nl_dump_req_cnt %d, nl_dump_res_cnt %d, not_multi_part_dump_res_cnt %d \n\
 nl_probe_req_cnt %d, nl_dump_res_size %d,ovsdb_tr_trigger_cnt %d \n",
